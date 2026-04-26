@@ -1,0 +1,133 @@
+type ParticipantView = struct {
+  tournament_id: u64,
+  participant: actor_id,
+  initial_virtual_balance: u128,
+  realized_pnl: i128,
+  unrealized_pnl: i128,
+  final_value: i128,
+  return_percentage_bps: i128,
+  position: opt Position,
+  claimable_reward: u128,
+};
+
+type Position = struct {
+  entry_price: u128,
+  size: u128,
+  direction: PositionDirection,
+  is_open: bool,
+};
+
+type PositionDirection = enum {
+  Long,
+  Short,
+};
+
+type TournamentView = struct {
+  tournament_id: u64,
+  name: str,
+  entry_fee: u128,
+  start_time: u64,
+  end_time: u64,
+  initial_virtual_balance: u128,
+  max_participants: u32,
+  participant_count: u32,
+  prize_pool: u128,
+  status: TournamentStatus,
+  final_btc_price: opt u128,
+  winners: vec WinnerPayout,
+};
+
+type TournamentStatus = enum {
+  Upcoming,
+  Active,
+  Ended,
+  Settled,
+};
+
+type WinnerPayout = struct {
+  rank: u8,
+  participant: actor_id,
+  payout: u128,
+  final_value: i128,
+  return_percentage_bps: i128,
+};
+
+type SettlementResult = struct {
+  tournament_id: u64,
+  final_btc_price: u128,
+  prize_pool: u128,
+  winners: vec WinnerPayout,
+};
+
+type LeaderboardEntry = struct {
+  rank: u8,
+  participant: actor_id,
+  final_value: i128,
+  realized_pnl: i128,
+  unrealized_pnl: i128,
+  return_percentage_bps: i128,
+  position: opt Position,
+};
+
+constructor {
+  Create : (initial_btc_price: u128);
+};
+
+service TradevaultArena {
+  ClaimReward : (tournament_id: u64) -> u128;
+  ClosePosition : (tournament_id: u64) -> ParticipantView;
+  CreateTournament : (name: str, entry_fee: u128, start_time: u64, end_time: u64, initial_virtual_balance: u128, max_participants: u32) -> TournamentView;
+  EndTournament : (tournament_id: u64) -> TournamentView;
+  JoinTournament : (tournament_id: u64) -> ParticipantView;
+  OpenPosition : (tournament_id: u64, direction: PositionDirection, size: u128) -> ParticipantView;
+  SettleTournament : (tournament_id: u64) -> SettlementResult;
+  UpdateMockPrice : (new_price: u128) -> u128;
+  query Admin : () -> actor_id;
+  query CurrentMockPrice : () -> u128;
+  query Leaderboard : (tournament_id: u64) -> vec LeaderboardEntry;
+  query Participant : (tournament_id: u64, participant: actor_id) -> ParticipantView;
+  query Tournament : (tournament_id: u64) -> TournamentView;
+  query Tournaments : () -> vec TournamentView;
+
+  events {
+    TournamentCreated: struct {
+      tournament_id: u64,
+      name: str,
+    };
+    TournamentJoined: struct {
+      tournament_id: u64,
+      participant: actor_id,
+      prize_pool: u128,
+    };
+    MockPriceUpdated: struct {
+      price: u128
+    };
+    PositionOpened: struct {
+      tournament_id: u64,
+      participant: actor_id,
+      direction: PositionDirection,
+      size: u128,
+      entry_price: u128,
+    };
+    PositionClosed: struct {
+      tournament_id: u64,
+      participant: actor_id,
+      realized_pnl: i128,
+      exit_price: u128,
+    };
+    TournamentEnded: struct {
+      tournament_id: u64,
+      final_btc_price: u128,
+    };
+    TournamentSettled: struct {
+      tournament_id: u64,
+      winners: vec WinnerPayout,
+    };
+    RewardClaimed: struct {
+      tournament_id: u64,
+      participant: actor_id,
+      payout: u128,
+    };
+  }
+};
+
