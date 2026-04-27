@@ -41,6 +41,6 @@
     "vite-plugin-node-polyfills": "0.23.0"
   },
   "engines": {
-    "node": ">=20"
+    "node": "20.x"
   }
 }
