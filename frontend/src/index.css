@@ -8,25 +8,23 @@
     --font-display: "Inter", system-ui, sans-serif;
     --font-sans: "Inter", system-ui, sans-serif;
     --font-mono: "JetBrains Mono", "IBM Plex Mono", monospace;
-    --bg: #050b08;
-    --sidebar: #08140f;
-    --panel: #0c1b14;
-    --panel-soft: #11271d;
-    --surface-3: #163427;
-    --input: #11271d;
-    --primary: #1ccb78;
-    --primary-strong: #67f7b1;
-    --long: #1ccb78;
-    --short: #ff6b6b;
-    --accent: #88dcae;
-    --warning: #f4c95d;
-    --text: #e8fff3;
-    --muted: #a9cdba;
-    --subtle: #5f7f6d;
-    --border: rgba(29, 70, 52, 0.8);
-    --border-hi: rgba(103, 247, 177, 0.28);
-    --border-soft: rgba(29, 70, 52, 0.58);
-    --glow: 0 18px 60px rgba(28, 203, 120, 0.12);
+    --bg: #030712;
+    --sidebar: rgba(10, 15, 29, 0.65);
+    --panel: rgba(15, 23, 42, 0.55);
+    --panel-soft: rgba(30, 41, 59, 0.4);
+    --input: rgba(15, 23, 42, 0.6);
+    --primary: #00F0FF;
+    --primary-strong: #00E5F2;
+    --long: #10B981;
+    --short: #F43F5E;
+    --accent: #B026FF;
+    --text: #F8FAFC;
+    --muted: #94A3B8;
+    --label: #64748B;
+    --border: rgba(255,255,255,0.12);
+    --border-soft: rgba(255,255,255,0.06);
+    --border-hi: rgba(255,255,255,0.20);
+    --warning: #F59E0B;
   }
 
   * {
@@ -39,9 +37,11 @@
 
   body {
     @apply min-h-screen text-slate-100 antialiased;
-    background:
-      radial-gradient(circle at top, rgba(28, 203, 120, 0.08), transparent 32%),
-      linear-gradient(180deg, rgba(5, 11, 8, 0.96), rgba(5, 11, 8, 1));
+    background: var(--bg);
+    background-image: 
+      radial-gradient(circle at 15% 50%, rgba(176, 38, 255, 0.08), transparent 40%),
+      radial-gradient(circle at 85% 30%, rgba(0, 240, 255, 0.08), transparent 40%);
+    background-attachment: fixed;
     font-family: var(--font-sans);
     overflow-x: hidden;
   }
@@ -67,28 +67,35 @@
 
 @layer components {
   .surface-panel {
-    @apply rounded-[12px] border;
+    @apply rounded-[16px] border backdrop-blur-2xl relative overflow-hidden;
     background: var(--panel);
-    border-color: var(--border);
-    box-shadow: var(--glow);
+    border-color: var(--border-soft);
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.08);
   }
 
   .surface-card {
-    @apply rounded-[12px] border;
+    @apply rounded-[16px] border backdrop-blur-xl relative transition-all duration-300;
     background: var(--panel);
-    border-color: var(--border);
-    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+    border-color: var(--border-soft);
+    box-shadow: 0 4px 24px rgba(0, 0, 0, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  }
+
+  .surface-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 12px 32px rgba(0, 240, 255, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.12);
+    border-color: rgba(255, 255, 255, 0.12);
   }
 
   .surface-soft {
-    @apply rounded-[8px] border;
+    @apply rounded-[12px] border backdrop-blur-md;
     background: var(--panel-soft);
-    border-color: var(--border);
+    border-color: var(--border-soft);
   }
 
   .section-kicker {
-    @apply text-[10px] font-semibold uppercase tracking-[0.12em];
-    color: #475569;
+    @apply text-[11px] font-bold uppercase tracking-[0.15em];
+    color: var(--primary);
+    text-shadow: 0 0 12px rgba(0, 240, 255, 0.4);
   }
 
   .tooltip-anchor {
@@ -96,56 +103,93 @@
   }
 
   .tooltip-panel {
-    @apply pointer-events-none absolute left-1/2 top-[calc(100%+0.65rem)] z-30 hidden w-56 -translate-x-1/2 rounded-[10px] border px-3 py-2 text-xs leading-5 text-slate-200 group-hover:block;
+    @apply pointer-events-none absolute left-1/2 top-[calc(100%+0.65rem)] z-30 hidden w-56 -translate-x-1/2 rounded-[12px] border px-3 py-2 text-xs leading-5 group-hover:block backdrop-blur-2xl;
+    color: var(--text);
     background: var(--panel);
-    border-color: var(--border-hi);
+    border-color: var(--border);
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.1);
   }
 
   .input-base {
-    @apply w-full rounded-[7px] border px-3 py-2.5 text-sm text-slate-100 outline-none transition placeholder:text-slate-500 focus:ring-2;
+    @apply w-full rounded-[10px] border px-4 py-3 text-sm outline-none transition-all duration-300;
+    color: var(--text);
     background: var(--input);
     border-color: var(--border-soft);
+    box-shadow: inset 0 2px 5px rgba(0, 0, 0, 0.3);
+  }
+  
+  .input-base::placeholder {
+    color: var(--muted);
   }
 
   .input-base:focus {
-    border-color: var(--border-hi);
-    background: var(--input);
-    --tw-ring-color: rgba(34, 211, 238, 0.12);
+    border-color: rgba(0, 240, 255, 0.5);
+    background: rgba(15, 23, 42, 0.8);
+    box-shadow: 0 0 0 2px rgba(0, 240, 255, 0.15), inset 0 2px 5px rgba(0, 0, 0, 0.3);
   }
 
   .button-primary {
-    @apply inline-flex items-center justify-center rounded-[10px] px-4 py-2.5 text-sm font-semibold text-slate-950 transition duration-200 active:translate-y-0 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400;
-    background: var(--primary);
-    box-shadow: 0 10px 28px rgba(28, 203, 120, 0.22);
+    @apply inline-flex items-center justify-center rounded-[10px] px-5 py-2.5 text-[14px] font-bold text-black transition-all duration-300 active:scale-95 disabled:cursor-not-allowed disabled:opacity-50 disabled:active:scale-100;
+    background: linear-gradient(135deg, var(--primary), #3b82f6);
+    box-shadow: 0 4px 15px rgba(0, 240, 255, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.4);
+  }
+
+  .button-primary:not(:disabled):hover {
+    box-shadow: 0 6px 20px rgba(0, 240, 255, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.5);
+    filter: brightness(1.1);
   }
 
   .button-secondary {
-    @apply inline-flex items-center justify-center rounded-[10px] border px-4 py-2.5 text-sm font-semibold text-slate-100 transition duration-200 active:translate-y-0 disabled:cursor-not-allowed disabled:border-slate-800 disabled:bg-slate-900/50 disabled:text-slate-500;
-    background: transparent;
-    border-color: var(--border-hi);
+    @apply inline-flex items-center justify-center rounded-[10px] border px-5 py-2.5 text-[14px] font-semibold transition-all duration-300 active:scale-95 disabled:cursor-not-allowed disabled:opacity-50 disabled:active:scale-100 backdrop-blur-md;
+    color: #F8FAFC;
+    background: rgba(255, 255, 255, 0.04);
+    border-color: rgba(255, 255, 255, 0.1);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.02);
+  }
+
+  .button-secondary:not(:disabled):hover {
+    background: rgba(255, 255, 255, 0.08);
+    border-color: rgba(255, 255, 255, 0.2);
   }
 
   .button-light {
-    @apply inline-flex items-center justify-center rounded-[10px] border px-4 py-2.5 text-sm font-semibold text-slate-100 transition duration-200 active:translate-y-0 disabled:cursor-not-allowed disabled:bg-slate-900/40 disabled:text-slate-500;
+    @apply inline-flex items-center justify-center rounded-[10px] border px-5 py-2.5 text-[14px] font-semibold transition-all duration-300 active:scale-95 disabled:cursor-not-allowed disabled:opacity-50 disabled:active:scale-100 backdrop-blur-md;
+    color: var(--text);
     background: var(--panel-soft);
     border-color: var(--border);
   }
 
+  .button-light:not(:disabled):hover {
+    background: rgba(255, 255, 255, 0.12);
+    border-color: rgba(255, 255, 255, 0.3);
+  }
+
   .button-accent {
-    @apply inline-flex items-center justify-center rounded-[10px] px-4 py-2.5 text-sm font-semibold text-slate-950 transition duration-200 active:translate-y-0 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400;
-    background: var(--long);
+    @apply inline-flex items-center justify-center rounded-[10px] px-5 py-2.5 text-[14px] font-bold text-white transition-all duration-300 active:scale-95 disabled:cursor-not-allowed disabled:opacity-50 disabled:active:scale-100;
+    background: linear-gradient(135deg, var(--accent), #d946ef);
+    box-shadow: 0 4px 15px rgba(176, 38, 255, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.4);
+  }
+
+  .button-accent:not(:disabled):hover {
+    box-shadow: 0 6px 20px rgba(176, 38, 255, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.5);
+    filter: brightness(1.1);
   }
 
   .product-card {
-    @apply rounded-[18px] border;
-    background: linear-gradient(180deg, rgba(12, 27, 20, 0.96), rgba(12, 27, 20, 0.9));
+    @apply rounded-[16px] border backdrop-blur-2xl relative overflow-hidden transition-all duration-300;
+    background: var(--panel);
     border-color: var(--border-soft);
-    box-shadow: 0 18px 44px rgba(0, 0, 0, 0.28);
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  }
+
+  .product-card:hover {
+    border-color: rgba(0, 240, 255, 0.4);
+    box-shadow: 0 12px 40px rgba(0, 240, 255, 0.15), inset 0 1px 0 rgba(255, 255, 255, 0.15);
   }
 
   .product-card-soft {
-    @apply rounded-[16px] border;
-    background: rgba(17, 39, 29, 0.9);
+    @apply rounded-[16px] border backdrop-blur-md transition-all duration-300;
+    background: var(--panel-soft);
     border-color: var(--border-soft);
   }
 }

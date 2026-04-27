@@ -13,6 +13,15 @@ export function PriceTicker({
 }) {
   const previous = useRef(price);
   const [flash, setFlash] = useState<"up" | "down" | null>(null);
+  const numericChange = change ? Number(change.replace(/[^0-9+.-]/g, "")) : null;
+  const changeTone =
+    numericChange == null || !Number.isFinite(numericChange)
+      ? "neutral"
+      : numericChange > 0
+        ? "up"
+        : numericChange < 0
+          ? "down"
+          : "neutral";
 
   useEffect(() => {
     if (previous.current === price) return;
@@ -28,12 +37,12 @@ export function PriceTicker({
   }, [price]);
 
   const flashClass =
-    flash === "up" ? "text-[var(--primary-strong)]" : flash === "down" ? "text-[var(--short)]" : "text-[var(--text)]";
+    flash === "up" ? "text-[var(--long)]" : flash === "down" ? "text-[var(--short)]" : "text-[var(--text)]";
   const flashBackground =
     flash === "up"
-      ? "bg-[rgba(28,203,120,0.14)]"
+      ? "bg-[rgba(34,197,94,0.12)]"
       : flash === "down"
-        ? "bg-[rgba(255,107,107,0.14)]"
+        ? "bg-[rgba(239,68,68,0.12)]"
         : "bg-[var(--panel)]";
   const arrow = flash === "up" ? "↑" : flash === "down" ? "↓" : "•";
 
@@ -41,7 +50,7 @@ export function PriceTicker({
     <motion.div
       animate={{ scale: flash ? [1, 1.02, 1] : 1 }}
       transition={{ duration: 0.22 }}
-      className={`inline-flex min-h-[36px] items-center gap-3 rounded-full border border-[var(--border-hi)] px-[14px] py-[6px] transition-colors duration-300 ${flashBackground}`}
+      className={`inline-flex min-h-[36px] items-center gap-3 rounded-full border border-[rgba(255,255,255,0.1)] px-[14px] py-[6px] transition-colors duration-300 ${flashBackground}`}
     >
       <span className="flex h-5 w-5 items-center justify-center rounded-full bg-[rgba(247,147,26,0.18)] text-[#F7931A]">
         <CurrencyBtc size={11} weight="bold" />
@@ -53,7 +62,7 @@ export function PriceTicker({
         key={price}
         initial={{ opacity: 0.85, y: 2, scale: 0.99 }}
         animate={{ opacity: 1, y: 0, scale: 1 }}
-        className={`font-mono text-sm font-semibold ${flashClass}`}
+        className={`font-mono text-[14px] font-semibold tabular-nums ${flashClass}`}
       >
         {price}
       </motion.span>
@@ -67,11 +76,11 @@ export function PriceTicker({
       </motion.span>
       {change ? (
         <span
-          className={`rounded-full px-2 py-0.5 font-mono text-xs ${
-            flash === "up"
-              ? "bg-[rgba(28,203,120,0.14)] text-[var(--primary-strong)]"
-              : flash === "down"
-                ? "bg-[rgba(255,107,107,0.14)] text-[var(--short)]"
+          className={`rounded-full px-2 py-0.5 font-mono text-xs tabular-nums ${
+            changeTone === "up"
+              ? "bg-[rgba(34,197,94,0.12)] text-[var(--long)]"
+              : changeTone === "down"
+                ? "bg-[rgba(239,68,68,0.12)] text-[var(--short)]"
                 : "bg-white/[0.04] text-[var(--muted)]"
           }`}
         >

@@ -22,7 +22,7 @@ export function AdminOverviewPanel({
             </p>
             <OverviewIcon tone={metric.tone ?? "default"} />
           </div>
-          <p className="mt-4 font-mono text-2xl font-semibold tabular-nums text-[var(--text)]">{metric.value}</p>
+          <p className="mt-4 font-mono text-[20px] font-semibold tabular-nums text-[var(--text)]">{metric.value}</p>
           <p className="mt-2 text-sm text-[var(--muted)]">{metric.meta}</p>
         </div>
       ))}
@@ -32,7 +32,7 @@ export function AdminOverviewPanel({
 
 function OverviewIcon({ tone }: { tone: "default" | "warning" | "positive" }) {
   if (tone === "positive") {
-    return <Pulse size={18} className="text-[var(--primary-strong)]" />;
+    return <Pulse size={18} className="text-[var(--long)]" />;
   }
   if (tone === "warning") {
     return <WarningDiamond size={18} className="text-[var(--warning)]" />;
@@ -42,7 +42,7 @@ function OverviewIcon({ tone }: { tone: "default" | "warning" | "positive" }) {
 
 export function AdminAuditBadge({ label }: { label: string }) {
   return (
-    <div className="inline-flex items-center gap-2 rounded-full bg-[rgba(103,247,177,0.1)] px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--primary-strong)]">
+    <div className="inline-flex items-center gap-2 rounded-full bg-[rgba(34,211,238,0.12)] px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--primary)]">
       <ShieldCheck size={12} />
       {label}
     </div>

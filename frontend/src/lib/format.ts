@@ -1,5 +1,6 @@
 import { u8aToHex } from "@polkadot/util";
 import { decodeAddress, encodeAddress } from "@polkadot/util-crypto";
+import { CHAIN_PRICE_DECIMALS, CHAIN_PRICE_SCALE } from "@/config";
 
 export const VARA_SS58_PREFIX = 137;
 const PLANCK_PER_VARA = 10n ** 12n;
@@ -74,8 +75,46 @@ export function formatPercentBps(value: BigNumberish): string {
   return `${negative ? "-" : ""}${whole.toLocaleString()}.${fraction}%`;
 }
 
+export function formatUsdPrice(
+  value: number | bigint | null | undefined,
+  fractionDigits = 2,
+): string {
+  if (value === null || value === undefined) return "$0.00";
+
+  const normalized =
+    typeof value === "bigint" ? Number(value) : typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(normalized)) return "$0.00";
+
+  return new Intl.NumberFormat(undefined, {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: fractionDigits,
+    maximumFractionDigits: fractionDigits,
+  }).format(normalized);
+}
+
+export function toChainPriceValue(value: number | null | undefined): bigint {
+  if (value === null || value === undefined || !Number.isFinite(value) || value <= 0) return 0n;
+  return BigInt(Math.floor(value * Number(CHAIN_PRICE_SCALE)));
+}
+
+export function fromChainPriceValue(value: BigNumberish): number {
+  const raw = toBigIntValue(value);
+  return Number(raw) / Number(CHAIN_PRICE_SCALE);
+}
+
+export function formatChainUsdPrice(value: BigNumberish, fractionDigits = CHAIN_PRICE_DECIMALS): string {
+  return formatUsdPrice(fromChainPriceValue(value), fractionDigits);
+}
+
+export function normalizeTimestampMs(value: BigNumberish): number {
+  const raw = Number(toBigIntValue(value));
+  if (!Number.isFinite(raw) || raw <= 0) return 0;
+  return raw < 1_000_000_000_000 ? raw * 1000 : raw;
+}
+
 export function formatTimestamp(value: BigNumberish): string {
-  const timestamp = Number(toBigIntValue(value));
+  const timestamp = normalizeTimestampMs(value);
   if (!Number.isFinite(timestamp) || timestamp <= 0) return "—";
 
   return new Intl.DateTimeFormat(undefined, {
@@ -134,8 +173,8 @@ export function describeCountdown(
   endTime: BigNumberish,
   now = Date.now(),
 ): string {
-  const start = Number(toBigIntValue(startTime));
-  const end = Number(toBigIntValue(endTime));
+  const start = normalizeTimestampMs(startTime);
+  const end = normalizeTimestampMs(endTime);
 
   if (now < start) {
     return `Starts in ${formatDuration(start - now)}`;

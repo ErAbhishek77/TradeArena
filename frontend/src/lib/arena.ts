@@ -6,11 +6,14 @@ import { toActorId } from "@/lib/format";
 
 export type TournamentStatus = "Upcoming" | "Active" | "Ended" | "Settled";
 export type PositionDirection = "Long" | "Short";
+export type CloseReason = "Manual" | "StopLoss" | "TakeProfit";
 
 export type Position = {
   entry_price: string;
   size: string;
   direction: PositionDirection;
+  stop_loss_price: string | null;
+  take_profit_price: string | null;
   is_open: boolean;
 };
 
@@ -24,6 +27,8 @@ export type ParticipantView = {
   return_percentage_bps: string;
   position: Position | null;
   claimable_reward: string;
+  last_close_reason: CloseReason | null;
+  last_close_price: string | null;
 };
 
 export type WinnerPayout = {
@@ -64,6 +69,13 @@ export type SettlementResult = {
   final_btc_price: string;
   prize_pool: string;
   winners: WinnerPayout[];
+};
+
+export type KeeperTickSummary = {
+  price_updated: boolean;
+  positions_closed: number;
+  tournament_ended: boolean;
+  tournament_settled: boolean;
 };
 
 export type TxAccount = {
@@ -117,7 +129,18 @@ async function runTransaction<T>(
   account: TxAccount,
   factory: (service: any) => any,
   value?: bigint,
+  actionName = "unknown",
+  payload?: unknown,
 ): Promise<T> {
+  console.log("[tx] action", actionName);
+  console.log("[tx] account", account.address);
+  console.log("[tx] payload", payload ?? null);
+  if (!account.signer) {
+    const error = new Error("Wallet signer not ready.");
+    console.error("[tx] failed", error);
+    throw error;
+  }
+
   const service = await getService(api, programId);
   const tx = factory(service);
 
@@ -128,8 +151,15 @@ async function runTransaction<T>(
   tx.withAccount(account.address, account.signer ? { signer: account.signer } : undefined);
   await tx.calculateGas();
 
-  const result = await tx.signAndSend();
-  return result.response();
+  try {
+    const result = await tx.signAndSend();
+    const response = await result.response();
+    console.log("[tx] success", response);
+    return response;
+  } catch (error) {
+    console.error("[tx] failed", error);
+    throw error;
+  }
 }
 
 export async function fetchAdmin(api: GearApi, programId: string): Promise<string> {
@@ -186,6 +216,9 @@ export async function createTournament(
       input.initialVirtualBalance,
       input.maxParticipants,
     ),
+    undefined,
+    "create_tournament",
+    input,
   );
 }
 
@@ -197,6 +230,9 @@ export async function updateMockPrice(
 ): Promise<string> {
   return runTransaction<string>(api, programId, account, (service) =>
     service.functions.UpdateMockPrice(newPrice),
+    undefined,
+    "update_mock_price",
+    { newPrice: newPrice.toString() },
   );
 }
 
@@ -213,6 +249,8 @@ export async function joinTournament(
     account,
     (service) => service.functions.JoinTournament(tournamentId),
     entryFee,
+    "join_tournament",
+    { tournamentId: tournamentId.toString(), entryFee: entryFee.toString() },
   );
 }
 
@@ -223,9 +261,26 @@ export async function openPosition(
   tournamentId: bigint,
   direction: PositionDirection,
   size: bigint,
+  stopLossPrice?: bigint | null,
+  takeProfitPrice?: bigint | null,
 ): Promise<ParticipantView> {
   return runTransaction<ParticipantView>(api, programId, account, (service) =>
-    service.functions.OpenPosition(tournamentId, direction, size),
+    service.functions.OpenPosition(
+      tournamentId,
+      direction,
+      size,
+      stopLossPrice ?? null,
+      takeProfitPrice ?? null,
+    ),
+    undefined,
+    "open_position",
+    {
+      tournamentId: tournamentId.toString(),
+      direction,
+      size: size.toString(),
+      stopLossPrice: stopLossPrice?.toString() ?? null,
+      takeProfitPrice: takeProfitPrice?.toString() ?? null,
+    },
   );
 }
 
@@ -237,6 +292,9 @@ export async function closePosition(
 ): Promise<ParticipantView> {
   return runTransaction<ParticipantView>(api, programId, account, (service) =>
     service.functions.ClosePosition(tournamentId),
+    undefined,
+    "close_position",
+    { tournamentId: tournamentId.toString() },
   );
 }
 
@@ -248,6 +306,9 @@ export async function endTournament(
 ): Promise<TournamentView> {
   return runTransaction<TournamentView>(api, programId, account, (service) =>
     service.functions.EndTournament(tournamentId),
+    undefined,
+    "end_tournament",
+    { tournamentId: tournamentId.toString() },
   );
 }
 
@@ -259,6 +320,9 @@ export async function settleTournament(
 ): Promise<SettlementResult> {
   return runTransaction<SettlementResult>(api, programId, account, (service) =>
     service.functions.SettleTournament(tournamentId),
+    undefined,
+    "settle_tournament",
+    { tournamentId: tournamentId.toString() },
   );
 }
 
@@ -270,5 +334,52 @@ export async function claimReward(
 ): Promise<string> {
   return runTransaction<string>(api, programId, account, (service) =>
     service.functions.ClaimReward(tournamentId),
+    undefined,
+    "claim_reward",
+    { tournamentId: tournamentId.toString() },
+  );
+}
+
+export async function updatePriceAndProcess(
+  api: GearApi,
+  programId: string,
+  account: TxAccount,
+  tournamentId: bigint,
+  newPrice: bigint,
+): Promise<KeeperTickSummary> {
+  return runTransaction<KeeperTickSummary>(api, programId, account, (service) =>
+    service.functions.UpdatePriceAndProcess(tournamentId, newPrice),
+    undefined,
+    "update_price_and_process",
+    { tournamentId: tournamentId.toString(), newPrice: newPrice.toString() },
+  );
+}
+
+export async function processTournament(
+  api: GearApi,
+  programId: string,
+  account: TxAccount,
+  tournamentId: bigint,
+): Promise<KeeperTickSummary> {
+  return runTransaction<KeeperTickSummary>(api, programId, account, (service) =>
+    service.functions.ProcessTournament(tournamentId),
+    undefined,
+    "process_tournament",
+    { tournamentId: tournamentId.toString() },
+  );
+}
+
+export async function keeperTick(
+  api: GearApi,
+  programId: string,
+  account: TxAccount,
+  tournamentId: bigint,
+  newPrice: bigint,
+): Promise<KeeperTickSummary> {
+  return runTransaction<KeeperTickSummary>(api, programId, account, (service) =>
+    service.functions.KeeperTick(tournamentId, newPrice),
+    undefined,
+    "keeper_tick",
+    { tournamentId: tournamentId.toString(), newPrice: newPrice.toString() },
   );
 }

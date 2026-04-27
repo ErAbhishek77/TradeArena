@@ -44,17 +44,14 @@ export function ArenaCard({
       onMouseLeave={onLeave}
       style={reduceMotion ? undefined : { transformStyle: "preserve-3d", transform }}
       className={cn(
-        "relative overflow-hidden rounded-2xl border bg-[var(--panel)] p-5 shadow-[0_16px_40px_rgba(0,0,0,0.28)]",
+        "relative overflow-hidden rounded-[12px] border bg-[var(--panel)] p-4",
         "border-[var(--border-soft)]",
-        glow && "shadow-[0_18px_44px_rgba(28,203,120,0.14)]",
-        highlight && "ring-1 ring-[var(--border-hi)]",
+        glow && "border-[rgba(34,197,94,0.18)]",
+        highlight && "ring-1 ring-[rgba(34,211,238,0.16)]",
         className,
       )}
       {...props}
     >
-      {glow ? (
-        <div className="pointer-events-none absolute inset-x-0 top-0 h-20 bg-[radial-gradient(circle_at_top,rgba(28,203,120,0.18),transparent_72%)]" />
-      ) : null}
       <div className="relative">{children}</div>
     </motion.div>
   );

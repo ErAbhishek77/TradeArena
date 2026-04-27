@@ -42,7 +42,7 @@ export function AnimatedStat({
 
   const toneClass =
     tone === "positive"
-      ? "text-[var(--primary-strong)]"
+      ? "text-[var(--long)]"
       : tone === "negative"
         ? "text-[var(--short)]"
         : tone === "warning"
@@ -56,7 +56,7 @@ export function AnimatedStat({
         key={`${label}-${value}`}
         animate={reduceMotion ? undefined : { scale: [1, 1.03, 1] }}
         transition={{ duration: 0.24 }}
-        className={cn("font-mono text-2xl font-semibold tabular-nums", toneClass)}
+        className={cn("font-mono text-[20px] font-semibold tabular-nums", toneClass)}
       >
         {prefix}
         <motion.span>{rounded}</motion.span>

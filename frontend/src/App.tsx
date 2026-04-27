@@ -2,12 +2,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
-  ClockCountdown,
   RocketLaunch,
 } from "@phosphor-icons/react";
-import { BarChart3, Coins, Home, LayoutDashboard, ShieldCheck, Trophy, WalletCards } from "lucide-react";
+import { BarChart3, Home, LayoutDashboard, ShieldCheck, Trophy, WalletCards } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
+  CloseReason,
   CreateTournamentInput,
   LeaderboardEntry,
   ParticipantView,
@@ -24,15 +24,11 @@ import { StatusPill as UiStatusPill } from "@/components/ui/StatusPill";
 import { TournamentRow as FeatureTournamentRow } from "@/components/features/TournamentRow";
 import { TradingChart } from "@/components/features/TradingChart";
 import { OrderPanel } from "@/components/features/OrderPanel";
-import { VaultStats } from "@/components/features/VaultStats";
 import { PositionCard } from "@/components/features/PositionCard";
-import { LeaderboardPanel } from "@/components/features/LeaderboardPanel";
-import { AdminConsole } from "@/components/features/AdminConsole";
-import { StepCards } from "@/components/features/StepCards";
 import { MarketHeader } from "@/components/features/MarketHeader";
-import { ProgressTracker } from "@/components/features/ProgressTracker";
 import { ClaimCard } from "@/components/features/ClaimCard";
-import { AdminOverviewPanel, AdminAuditBadge } from "@/components/features/AdminOverviewPanel";
+import { AdminOverviewPanel } from "@/components/features/AdminOverviewPanel";
+import { HomePage } from "@/components/features/HomePage";
 import { EmptyStatePanel } from "@/components/ui/EmptyStatePanel";
 import { ArenaCard } from "@/components/ui/arena-card";
 import { LiveRankCard } from "@/components/ui/live-rank-card";
@@ -40,7 +36,6 @@ import { RewardCard } from "@/components/ui/reward-card";
 import { QualificationBadge } from "@/components/ui/qualification-badge";
 import { GlowTable } from "@/components/ui/glow-table";
 import { VaultPositionCard } from "@/components/ui/vault-position-card";
-import { AnimatedStat } from "@/components/ui/animated-stat";
 import type {
   ClaimableReward,
   TournamentHistoryItem,
@@ -49,33 +44,44 @@ import type {
   VaultPosition,
   VaultSummary,
 } from "@/components/ui/arena-types";
-import { fetchLiveBtcHistory, fetchLiveBtcPrice, type LivePricePoint } from "@/lib/live-price";
+import type { QuickActionItem } from "@/components/features/QuickActions";
+import {
+  connectLiveBtcTickerStream,
+  fetchLiveBtcHistory,
+  fetchLiveBtcPrice,
+  type LivePriceFeedStatus,
+  type LivePricePoint,
+  type LivePriceSnapshot,
+} from "@/lib/live-price";
 import {
   claimReward,
   closePosition,
   createTournament,
-  endTournament,
   fetchAdmin,
   fetchCurrentMockPrice,
   fetchLeaderboard,
   fetchParticipant,
   fetchTournaments,
   joinTournament,
+  keeperTick,
   openPosition,
-  settleTournament,
-  updateMockPrice,
 } from "@/lib/arena";
 import {
   describeCountdown,
+  formatChainUsdPrice,
   formatPercentBps,
   formatPlanck,
   formatSigned,
   formatTimestamp,
+  formatUsdPrice,
+  fromChainPriceValue,
   isProgramIdLike,
+  normalizeTimestampMs,
   parsePlanck,
   parseUnsignedInteger,
   sameAddress,
   shortAddress,
+  toChainPriceValue,
   toBigIntValue,
   toDatetimeLocalValue,
 } from "@/lib/format";
@@ -112,6 +118,7 @@ type TradeHistoryItem = {
   entryPrice: string;
   exitPrice?: string;
   pnl?: string;
+  closeReason?: CloseReason | null;
   timestamp: number;
 };
 
@@ -129,6 +136,7 @@ export function App() {
     account,
     accounts,
     balance,
+    connect,
     connectWallet,
     disconnect,
     selectAccount,
@@ -145,27 +153,39 @@ export function App() {
   const [createForm, setCreateForm] = useState(defaultCreateForm);
   const [createFormError, setCreateFormError] = useState<string | null>(null);
   const [tradeSize, setTradeSize] = useState("100");
+  const [stopLossPrice, setStopLossPrice] = useState("");
+  const [takeProfitPrice, setTakeProfitPrice] = useState("");
   const [tradeFormError, setTradeFormError] = useState<string | null>(null);
   const [tradeHistory, setTradeHistory] = useState<TradeHistoryItem[]>([]);
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const [lastPriceSyncAt, setLastPriceSyncAt] = useState<number | null>(null);
   const [syncWarning, setSyncWarning] = useState<string | null>(null);
-  const [adminAutoSyncEnabled, setAdminAutoSyncEnabled] = useState(false);
-  const syncInFlightRef = useRef(false);
+  const [streamedLiveHistory, setStreamedLiveHistory] = useState<LivePricePoint[]>([]);
+  const [streamedLivePrice, setStreamedLivePrice] = useState<LivePriceSnapshot | null>(null);
+  const [livePriceFeedStatus, setLivePriceFeedStatus] =
+    useState<LivePriceFeedStatus>("connecting");
+  const txInFlightRef = useRef(false);
+  const previousOpenPositionRef = useRef<{
+    tournamentId: string;
+    direction: PositionDirection;
+    size: string;
+    entryPrice: string;
+  } | null>(null);
+  const lastDetectedCloseRef = useRef<string | null>(null);
 
   const isChainReady = apiStatus === "ready" && Boolean(api);
   const hasProgramId = isProgramIdLike(programId);
   const txAccount = account ? { address: account.address, signer } : null;
 
-  const pushToast = (tone: ToastItem["tone"], message: string) => {
+  const pushToast = useCallback((tone: ToastItem["tone"], message: string) => {
     const id = Date.now() + Math.floor(Math.random() * 1000);
     setToasts((current) => [...current, { id, tone, message }].slice(-4));
     window.setTimeout(() => {
       setToasts((current) => current.filter((toast) => toast.id !== id));
     }, 3600);
-  };
+  }, []);
 
-  const refreshArena = async () => {
+  const refreshArena = useCallback(async () => {
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: ["admin"] }),
       queryClient.invalidateQueries({ queryKey: ["current-price"] }),
@@ -173,7 +193,7 @@ export function App() {
       queryClient.invalidateQueries({ queryKey: ["participant"] }),
       queryClient.invalidateQueries({ queryKey: ["leaderboard"] }),
     ]);
-  };
+  }, [queryClient]);
 
   const adminQuery = useQuery({
     queryKey: ["admin", network.endpoint, programId],
@@ -185,13 +205,13 @@ export function App() {
     queryKey: ["current-price", network.endpoint, programId],
     queryFn: () => fetchCurrentMockPrice(api!, programId),
     enabled: isChainReady && hasProgramId,
-    refetchInterval: 15_000,
+    refetchInterval: 3_000,
   });
 
   const livePriceQuery = useQuery({
     queryKey: ["live-btc-price"],
     queryFn: fetchLiveBtcPrice,
-    refetchInterval: 60_000,
+    refetchInterval: livePriceFeedStatus === "streaming" ? false : 3_000,
   });
 
   const liveHistoryQuery = useQuery({
@@ -204,7 +224,7 @@ export function App() {
     queryKey: ["tournaments", network.endpoint, programId],
     queryFn: () => fetchTournaments(api!, programId),
     enabled: isChainReady && hasProgramId,
-    refetchInterval: 15_000,
+    refetchInterval: 3_000,
   });
 
   const tournaments = (tournamentsQuery.data ?? []).slice().sort((left, right) =>
@@ -222,20 +242,15 @@ export function App() {
     );
     if (!selectedTournamentId || !existing) {
       const preferred =
-        tournaments.find((tournament) => tournament.status === "Active") ??
-        tournaments.find((tournament) => tournament.status === "Upcoming") ??
+        tournaments.find((tournament) => getTournamentLifecycleState(tournament, now) === "Live") ??
+        tournaments.find((tournament) => getTournamentLifecycleState(tournament, now) === "Upcoming") ??
         tournaments[0];
       setSelectedTournamentId(preferred.tournament_id);
     }
-  }, [selectedTournamentId, tournaments]);
+  }, [now, selectedTournamentId, tournaments]);
 
   const selectedTournament =
     tournaments.find((tournament) => tournament.tournament_id === selectedTournamentId) ?? null;
-  const selectedTournamentEnd = selectedTournament
-    ? Number(toBigIntValue(selectedTournament.end_time))
-    : null;
-  const selectedTournamentExpired =
-    selectedTournamentEnd != null ? now >= selectedTournamentEnd : false;
 
   useEffect(() => {
     if (!account?.address || !selectedTournamentId) {
@@ -245,6 +260,11 @@ export function App() {
 
     setTradeHistory(readTradeHistory(programId, account.address, selectedTournamentId));
   }, [account?.address, programId, selectedTournamentId]);
+
+  useEffect(() => {
+    setStopLossPrice("");
+    setTakeProfitPrice("");
+  }, [selectedTournamentId]);
 
   useEffect(() => {
     if (route.page === "tournament" && route.tournamentId) {
@@ -273,8 +293,8 @@ export function App() {
       ),
     enabled: isChainReady && hasProgramId && Boolean(selectedTournament) && Boolean(account),
     retry: false,
-    refetchInterval:
-      account && selectedTournament?.status === "Active" ? 3_000 : 15_000,
+    refetchInterval: (query) =>
+      account && selectedTournament && query.state.data ? 3_000 : false,
   });
 
   const participantErrorMessage = extractErrorMessage(participantQuery.error);
@@ -286,7 +306,10 @@ export function App() {
     queryFn: () =>
       fetchLeaderboard(api!, programId, toBigIntValue(selectedTournament?.tournament_id)),
     enabled: isChainReady && hasProgramId && Boolean(selectedTournament),
-    refetchInterval: selectedTournament?.status === "Active" ? 3_000 : 15_000,
+    refetchInterval:
+      selectedTournament && getTournamentLifecycleState(selectedTournament, now) === "Live"
+        ? 3_000
+        : false,
   });
 
   const isAdmin = sameAddress(account?.address, adminQuery.data);
@@ -306,20 +329,34 @@ export function App() {
     },
     onError: (error) => pushToast("error", extractErrorMessage(error)),
   });
-
   const updatePriceMutation = useMutation({
     mutationFn: async (newPrice: bigint) => {
-      if (!api || !txAccount) throw new Error("Connect a wallet to update the price.");
-      return updateMockPrice(api, programId, txAccount, newPrice);
+      if (!api || !txAccount || !selectedTournament) {
+        throw new Error("Select a tournament and connect the admin wallet first.");
+      }
+      return keeperTick(
+        api,
+        programId,
+        txAccount,
+        toBigIntValue(selectedTournament.tournament_id),
+        newPrice,
+      );
     },
-    onSuccess: async () => {
+    onSuccess: async (result) => {
       await refreshArena();
       setLastPriceSyncAt(Date.now());
       setSyncWarning(null);
+      if (result.positions_closed > 0 || result.tournament_ended || result.tournament_settled) {
+        pushToast(
+          "info",
+          `Price synced${result.positions_closed ? ` · ${result.positions_closed} position${result.positions_closed === 1 ? "" : "s"} closed` : ""}${result.tournament_ended ? " · tournament ended" : ""}${result.tournament_settled ? " · tournament settled" : ""}.`,
+        );
+      } else {
+        pushToast("success", "Price synced and processed.");
+      }
     },
-    onError: () => setSyncWarning("Price sync failed. Try again in a moment."),
+    onError: (error) => setSyncWarning(extractErrorMessage(error)),
   });
-
   const joinMutation = useMutation({
     mutationFn: async (tournament: TournamentView) => {
       if (!api || !txAccount) throw new Error("Connect a wallet to join.");
@@ -345,9 +382,14 @@ export function App() {
     mutationFn: async ({
       direction,
       size,
+      riskControls,
     }: {
       direction: PositionDirection;
       size: bigint;
+      riskControls: {
+        stopLossPrice: bigint | null;
+        takeProfitPrice: bigint | null;
+      };
     }) => {
       if (!api || !txAccount || !selectedTournament) {
         throw new Error("Select a tournament and connect a wallet first.");
@@ -360,6 +402,8 @@ export function App() {
         toBigIntValue(selectedTournament.tournament_id),
         direction,
         size,
+        riskControls.stopLossPrice,
+        riskControls.takeProfitPrice,
       );
     },
     onSuccess: async (_result, variables) => {
@@ -383,7 +427,7 @@ export function App() {
       await refreshArena();
       pushToast(
         "success",
-        `${variables.direction} position opened at $${currentPriceValue.toLocaleString()}.`,
+        `${variables.direction} position opened at ${formatChainUsdPrice(currentPriceValue)}.`,
       );
     },
     onError: (error) => pushToast("error", extractErrorMessage(error)),
@@ -403,6 +447,9 @@ export function App() {
       );
     },
     onSuccess: async (result) => {
+      setStopLossPrice("");
+      setTakeProfitPrice("");
+
       if (
         account?.address &&
         selectedTournament?.tournament_id &&
@@ -420,7 +467,13 @@ export function App() {
             size: participant.position.size,
             entryPrice: participant.position.entry_price,
             exitPrice: currentPriceValue.toString(),
-            pnl: result.realized_pnl,
+            pnl: calculateSyntheticPnl(
+              participant.position.direction,
+              toBigIntValue(participant.position.size),
+              toBigIntValue(participant.position.entry_price),
+              currentPriceValue,
+            ).toString(),
+            closeReason: result.last_close_reason,
             timestamp: Date.now(),
           },
         );
@@ -430,42 +483,8 @@ export function App() {
       await refreshArena();
       pushToast(
         "success",
-        `Position closed with ${formatSigned(result.realized_pnl)} PnL at $${currentPriceValue.toLocaleString()}.`,
+        `Position closed with ${formatSigned(result.realized_pnl)} PnL at ${formatChainUsdPrice(currentPriceValue)}.`,
       );
-    },
-    onError: (error) => pushToast("error", extractErrorMessage(error)),
-  });
-
-  const tournamentLifecycleMutation = useMutation({
-    mutationFn: async () => {
-      if (!api || !txAccount || !selectedTournament) {
-        throw new Error("Select a tournament and connect a wallet first.");
-      }
-
-      const tournamentId = toBigIntValue(selectedTournament.tournament_id);
-      const expired = Number(toBigIntValue(selectedTournament.end_time)) <= Date.now();
-
-      if (selectedTournament.status === "Settled") {
-        throw new Error("Tournament is already settled.");
-      }
-
-      if (selectedTournament.status === "Upcoming") {
-        throw new Error("Tournament cannot be settled before it goes live.");
-      }
-
-      if (selectedTournament.status === "Active" && !expired) {
-        throw new Error("Tournament is still live.");
-      }
-
-      if (selectedTournament.status === "Active") {
-        await endTournament(api, programId, txAccount, tournamentId);
-      }
-
-      return settleTournament(api, programId, txAccount, tournamentId);
-    },
-    onSuccess: async () => {
-      await refreshArena();
-      pushToast("success", "Tournament ended and settled.");
     },
     onError: (error) => pushToast("error", extractErrorMessage(error)),
   });
@@ -497,8 +516,7 @@ export function App() {
 
     try {
       if (!hasProgramId) throw new Error("Paste a deployed program ID before using admin actions.");
-      if (!txAccount) throw new Error("Connect the admin wallet first.");
-      if (!isAdmin) throw new Error("Only the contract admin can create tournaments.");
+      if (!ensureWriteAccess("create_tournament", createForm, { requireAdmin: true })) return;
 
       const name = createForm.name.trim();
       if (!name) throw new Error("Tournament name is required.");
@@ -527,7 +545,7 @@ export function App() {
         throw new Error("Max participants must be greater than zero.");
       }
 
-      createTournamentMutation.mutate(input);
+      void runGuardedTransaction(txInFlightRef, () => createTournamentMutation.mutateAsync(input));
     } catch (error) {
       setCreateFormError(extractErrorMessage(error));
     }
@@ -547,38 +565,113 @@ export function App() {
       if (tradingBlockedReason) {
         throw new Error(tradingBlockedReason);
       }
-
-      openPositionMutation.mutate({
+      const parsedRiskControls = parseRiskControls({
         direction: tradeDirection,
-        size: parseUnsignedInteger(tradeSize, "Position size"),
+        entryPrice: currentTournamentPriceNumber,
+        stopLossInput: stopLossPrice,
+        takeProfitInput: takeProfitPrice,
       });
+      if (
+        !ensureWriteAccess("open_position", {
+          tournamentId: selectedTournament.tournament_id,
+          direction: tradeDirection,
+          size: tradeSize,
+          stopLossPrice: parsedRiskControls.stopLossPrice,
+          takeProfitPrice: parsedRiskControls.takeProfitPrice,
+        })
+      ) {
+        return;
+      }
+
+      void runGuardedTransaction(txInFlightRef, () =>
+        openPositionMutation.mutateAsync({
+          direction: tradeDirection,
+          size: parseUnsignedInteger(tradeSize, "Position size"),
+          riskControls: parsedRiskControls,
+        }),
+      );
     } catch (error) {
       setTradeFormError(extractErrorMessage(error));
     }
   };
 
+  useEffect(() => {
+    return connectLiveBtcTickerStream({
+      onUpdate: (snapshot) => {
+        setStreamedLivePrice(snapshot);
+      },
+      onStatusChange: (status) => {
+        setLivePriceFeedStatus(status);
+        if (status === "reconnecting") {
+          setStreamedLivePrice(null);
+        }
+      },
+    });
+  }, []);
+
+  const activeLivePrice =
+    livePriceFeedStatus === "streaming" && streamedLivePrice
+      ? streamedLivePrice
+      : livePriceQuery.data ?? streamedLivePrice ?? null;
   const currentPriceValue = currentPriceQuery.data ? toBigIntValue(currentPriceQuery.data) : 0n;
-  const livePriceValue = livePriceQuery.data ? BigInt(Math.round(livePriceQuery.data.price)) : 0n;
-  const livePriceChange24h = livePriceQuery.data?.change24h ?? 0;
-  const liveHistory = useMemo(
-    () => mergeLivePriceHistory(liveHistoryQuery.data ?? [], livePriceQuery.data?.price ?? null),
-    [liveHistoryQuery.data, livePriceQuery.data?.price],
-  );
-  const previousLivePriceValue =
-    liveHistory.length > 1
-      ? BigInt(Math.round(liveHistory[liveHistory.length - 2]?.price ?? livePriceQuery.data?.price ?? 0))
-      : livePriceValue;
-  const priceDelta = livePriceValue - previousLivePriceValue;
-  const projectedPrice = currentPriceValue + priceDelta;
-  const tradeSizeValue = /^\d+$/.test(tradeSize.trim()) ? BigInt(tradeSize.trim()) : 0n;
-  const estimatedTradePnl =
-    currentPriceValue > 0n && tradeSizeValue > 0n
-      ? calculateSyntheticPnl(tradeDirection, tradeSizeValue, currentPriceValue, projectedPrice)
-      : 0n;
+  const livePriceValue = activeLivePrice ? toChainPriceValue(activeLivePrice.price) : 0n;
+  const currentTournamentPriceNumber = currentPriceValue > 0n ? fromChainPriceValue(currentPriceValue) : 0;
+  const livePriceNumber = activeLivePrice?.price ?? 0;
+  const livePriceChange24h = activeLivePrice?.change24h ?? 0;
+  const usingFallbackPriceSource = activeLivePrice?.source === "fallback";
+  const livePriceLabel = activeLivePrice ? formatUsdPrice(activeLivePrice.price) : "BTC --";
+  const tournamentPriceLabel = currentPriceValue ? formatChainUsdPrice(currentPriceValue) : "$0.00";
+  const priceSourceNotice =
+    livePriceFeedStatus === "reconnecting"
+      ? "Reconnecting price feed..."
+      : usingFallbackPriceSource
+        ? "Using fallback price source"
+        : undefined;
+  useEffect(() => {
+    if (!liveHistoryQuery.data?.length) return;
+    setStreamedLiveHistory((current) =>
+      current.length ? current : liveHistoryQuery.data.slice(-120),
+    );
+  }, [liveHistoryQuery.data]);
+
+  useEffect(() => {
+    const nextLivePrice = activeLivePrice?.price;
+    if (typeof nextLivePrice !== "number") return;
+
+    setStreamedLiveHistory((current) => {
+      const base = current.length ? current : liveHistoryQuery.data?.slice(-120) ?? [];
+      const nextTimestamp = Math.floor((activeLivePrice?.updatedAt ?? Date.now()) / 1000) * 1000;
+      const previousTimestamp = base.length
+        ? Math.floor(base[base.length - 1]!.timestamp / 1000) * 1000
+        : 0;
+      if (nextTimestamp <= previousTimestamp) {
+        return current;
+      }
+      const nextPoint: LivePricePoint = {
+        price: nextLivePrice,
+        timestamp: nextTimestamp,
+        open: nextLivePrice,
+        high: nextLivePrice,
+        low: nextLivePrice,
+        close: nextLivePrice,
+      };
+      return [...base, nextPoint].slice(-120);
+    });
+  }, [activeLivePrice, liveHistoryQuery.data]);
+
+  const liveHistory = streamedLiveHistory;
+  const tradeSizeNumber = parseTradeSizeNumber(tradeSize);
+  const estimatedTradeMetrics =
+    currentTournamentPriceNumber > 0 && livePriceNumber > 0 && tradeSizeNumber > 0
+      ? calculatePnl({
+          direction: tradeDirection,
+          size: tradeSizeNumber,
+          entryPrice: currentTournamentPriceNumber,
+          currentPrice: livePriceNumber,
+        })
+      : { pnl: 0, returnPct: 0 };
 
   const featuredTournaments = tournaments.slice(0, 3);
-  const canSyncTournamentPrice =
-    isAdmin && selectedTournament?.status === "Active" && !selectedTournamentExpired;
   const selectedTournamentState = selectedTournament
     ? getTournamentLifecycleState(selectedTournament, now)
     : null;
@@ -588,6 +681,11 @@ export function App() {
   const selectedTournamentStatusLabel = selectedTournamentState
     ? mapStatusLabel(selectedTournamentState)
     : "Idle";
+  const priceDriftRatio =
+    currentTournamentPriceNumber > 0 && livePriceNumber > 0
+      ? Math.abs(livePriceNumber - currentTournamentPriceNumber) / currentTournamentPriceNumber
+      : 0;
+  const priceSyncPaused = currentTournamentPriceNumber > 0 && livePriceNumber > 0 && priceDriftRatio > 0.05;
   const syncStatusLabel = getPriceSyncStatus({
     livePriceValue,
     currentPriceValue,
@@ -595,98 +693,193 @@ export function App() {
     lastPriceSyncAt,
     now,
     tournamentState: selectedTournamentState,
+    latencyMs: null,
+    engineStatus: "idle",
   });
   const tournamentPriceHelperText =
     selectedTournamentState === "Live"
-      ? syncStatusLabel === "Price feed delayed"
-        ? "Tournament price is synced by admin/oracle. The live feed is delayed right now."
-        : "Tournament price is synced by admin/oracle."
+      ? priceSyncPaused
+        ? "Price syncing is catching up with Binance. New trades are paused until contract price drift falls below 5%."
+        : "Live price updates automatically. On-chain price is updated by keeper/admin."
       : "Tournament price is fixed once the tournament closes.";
+  const marketSourceNotice = priceSyncPaused
+    ? "Price syncing... trading temporarily paused"
+    : syncWarning ?? priceSourceNotice;
+  const livePreviewMetrics =
+    participant?.position?.is_open && livePriceNumber > 0
+      ? calculatePnl({
+          direction: participant.position.direction,
+          size: Number(toBigIntValue(participant.position.size)),
+          entryPrice: fromChainPriceValue(participant.position.entry_price),
+          currentPrice: livePriceNumber,
+        })
+      : { pnl: 0, returnPct: 0 };
+  const tradeDisabledReasonBase = selectedTournament
+    ? getTradingDisabledReason(selectedTournament, participant, now)
+    : null;
+  const tradeDisabledReason = priceSyncPaused
+    ? "Price syncing... trading temporarily paused"
+    : tradeDisabledReasonBase;
+
+  useEffect(() => {
+    if (!participant?.position?.is_open || !selectedTournament) return;
+
+    const id = window.setInterval(() => {
+      void Promise.allSettled([
+        participantQuery.refetch(),
+        currentPriceQuery.refetch(),
+        leaderboardQuery.refetch(),
+      ]);
+    }, 3_000);
+
+    return () => window.clearInterval(id);
+  }, [
+    currentPriceQuery.refetch,
+    leaderboardQuery.refetch,
+    participant?.position?.is_open,
+    participantQuery.refetch,
+    selectedTournament?.tournament_id,
+  ]);
+
+  useEffect(() => {
+    if (participant?.position?.is_open && selectedTournament?.tournament_id) {
+      previousOpenPositionRef.current = {
+        tournamentId: selectedTournament.tournament_id,
+        direction: participant.position.direction,
+        size: participant.position.size,
+        entryPrice: participant.position.entry_price,
+      };
+      return;
+    }
+
+    const previousOpenPosition = previousOpenPositionRef.current;
+    if (
+      !previousOpenPosition ||
+      !participant ||
+      !account?.address ||
+      !selectedTournament?.tournament_id ||
+      previousOpenPosition.tournamentId !== selectedTournament.tournament_id ||
+      !participant.last_close_reason ||
+      !participant.last_close_price
+    ) {
+      return;
+    }
+
+    const closeKey = `${selectedTournament.tournament_id}-${participant.last_close_reason}-${participant.last_close_price}-${participant.realized_pnl}`;
+    if (lastDetectedCloseRef.current === closeKey) {
+      previousOpenPositionRef.current = null;
+      return;
+    }
+
+    setTradeHistory((current) =>
+      appendTradeHistory(
+        programId,
+        account.address,
+        selectedTournament.tournament_id,
+        current,
+        {
+          action: "CLOSE",
+          direction: previousOpenPosition.direction,
+          size: previousOpenPosition.size,
+          entryPrice: previousOpenPosition.entryPrice,
+          exitPrice: participant.last_close_price ?? undefined,
+          pnl:
+            participant.last_close_price != null
+              ? calculateSyntheticPnl(
+                  previousOpenPosition.direction,
+                  toBigIntValue(previousOpenPosition.size),
+                  toBigIntValue(previousOpenPosition.entryPrice),
+                  toBigIntValue(participant.last_close_price),
+                ).toString()
+              : undefined,
+          closeReason: participant.last_close_reason,
+          timestamp: Date.now(),
+        },
+      ),
+    );
+    lastDetectedCloseRef.current = closeKey;
+    previousOpenPositionRef.current = null;
+  }, [
+    account?.address,
+    participant,
+    participant?.position?.is_open,
+    programId,
+    selectedTournament?.tournament_id,
+  ]);
 
   const openTournament = (tournamentId: string) => {
     setSelectedTournamentId(tournamentId);
     setRoute({ page: "trade", tournamentId });
   };
 
-  const syncTournamentPrice = useCallback(
-    (nextPrice: bigint) => {
-      if (!hasProgramId) {
-        throw new Error("Missing deployed program ID.");
+  const handleConnectWallet = useCallback(async () => {
+    try {
+      const available = wallets.length ? wallets : await connect();
+      if (available.length === 0) {
+        pushToast("error", "No Vara-compatible wallet extension found.");
+        setWalletPickerOpen(false);
+        return;
       }
-      if (!txAccount) {
-        throw new Error("Connect the admin wallet first.");
-      }
-      if (!isAdmin) {
-        throw new Error("Only the contract admin can update the tournament price.");
-      }
-      if (nextPrice <= 0n) {
-        throw new Error("Tournament price must be greater than zero.");
-      }
-      if (syncInFlightRef.current || updatePriceMutation.isPending) return;
-      if (nextPrice === currentPriceValue) return;
 
-      syncInFlightRef.current = true;
-      updatePriceMutation.mutate(nextPrice);
+      if (available.length === 1) {
+        await connectWallet(available[0]!);
+        setWalletPickerOpen(false);
+        return;
+      }
+
+      setWalletPickerOpen((current) => !current);
+    } catch (error) {
+      pushToast("error", extractErrorMessage(error));
+    }
+  }, [connect, connectWallet, pushToast, wallets]);
+
+  const ensureWriteAccess = useCallback(
+    (
+      actionName: string,
+      payload?: unknown,
+      options?: { requireAdmin?: boolean },
+    ) => {
+      console.log("[tx] action", actionName);
+      console.log("[tx] account", account?.address ?? null);
+      console.log("[tx] payload", payload ?? null);
+
+      if (!account) {
+        pushToast("error", "Connect wallet first");
+        void handleConnectWallet();
+        return false;
+      }
+
+      if (!signer) {
+        pushToast("error", "Wallet signer not ready.");
+        void handleConnectWallet();
+        return false;
+      }
+
+      if (options?.requireAdmin && !isAdmin) {
+        pushToast("error", "Admin wallet required.");
+        return false;
+      }
+
+      return true;
     },
-    [currentPriceValue, hasProgramId, isAdmin, txAccount, updatePriceMutation],
+    [account, handleConnectWallet, isAdmin, pushToast, signer],
   );
 
-  useEffect(() => {
-    if (!canSyncTournamentPrice) {
-      setSyncWarning(null);
-      setAdminAutoSyncEnabled(false);
-    }
-  }, [canSyncTournamentPrice]);
-
-  useEffect(() => {
-    syncInFlightRef.current = updatePriceMutation.isPending;
-  }, [updatePriceMutation.isPending]);
-
-  const handleManualPriceSync = useCallback(() => {
-    try {
-      if (livePriceValue <= 0n) throw new Error("Live BTC price is not ready.");
-      syncTournamentPrice(livePriceValue);
-    } catch (error) {
-      setSyncWarning(extractErrorMessage(error));
-    }
-  }, [livePriceValue, syncTournamentPrice]);
-
-  useEffect(() => {
-    if (!adminAutoSyncEnabled) return;
-    if (!canSyncTournamentPrice) return;
-    if (route.page !== "admin") return;
-
-    const runSync = () => {
-      if (syncInFlightRef.current || updatePriceMutation.isPending) return;
-      if (livePriceValue <= 0n || livePriceValue === currentPriceValue) return;
-      try {
-        syncTournamentPrice(livePriceValue);
-      } catch (error) {
-        setSyncWarning(extractErrorMessage(error));
+  const handleJoinTournament = useCallback(
+    (tournament: TournamentView) => {
+      const reason = getJoinReason(tournament, now);
+      if (reason) {
+        pushToast("error", reason);
+        return;
       }
-    };
-
-    const id = window.setInterval(runSync, 15_000);
-    return () => window.clearInterval(id);
-  }, [
-    adminAutoSyncEnabled,
-    canSyncTournamentPrice,
-    currentPriceValue,
-    livePriceValue,
-    route.page,
-    syncTournamentPrice,
-    updatePriceMutation.isPending,
-  ]);
-
-  const handleConnectWallet = () => {
-    if (wallets.length === 1) {
-      connectWallet(wallets[0]);
-      setWalletPickerOpen(false);
-      return;
-    }
-
-    setWalletPickerOpen((current) => !current);
-  };
+      if (!ensureWriteAccess("join_tournament", { tournamentId: tournament.tournament_id })) {
+        return;
+      }
+      joinMutation.reset();
+      void runGuardedTransaction(txInFlightRef, () => joinMutation.mutateAsync(tournament));
+    },
+    [ensureWriteAccess, joinMutation, now, pushToast],
+  );
 
   const banner = resolveBanner({
     apiError,
@@ -700,14 +893,44 @@ export function App() {
 
   const preferredTradeTournament =
     selectedTournament ??
-    tournaments.find((tournament) => tournament.status === "Active") ??
-    tournaments.find((tournament) => tournament.status === "Upcoming") ??
+    tournaments.find((tournament) => getTournamentLifecycleState(tournament, now) === "Live") ??
+    tournaments.find((tournament) => getTournamentLifecycleState(tournament, now) === "Upcoming") ??
     tournaments[0] ??
     null;
 
-  const tradeRoute: AppRoute = preferredTradeTournament
-    ? { page: "trade", tournamentId: preferredTradeTournament.tournament_id }
+  const tradeRoute: AppRoute = selectedTournament
+    ? { page: "trade", tournamentId: selectedTournament.tournament_id }
     : { page: "trade" };
+  const tradeViewTournament =
+    route.page === "trade" && !route.tournamentId ? null : selectedTournament;
+
+  function handleManualPriceSync() {
+    if (!selectedTournament) {
+      pushToast("error", "Select a tournament first.");
+      return;
+    }
+    if (!ensureWriteAccess("keeper_tick", { tournamentId: selectedTournament.tournament_id, price: livePriceValue.toString() }, { requireAdmin: true })) {
+      return;
+    }
+    if (livePriceValue <= 0n) {
+      setSyncWarning("Live BTC price is not ready.");
+      return;
+    }
+    updatePriceMutation.reset();
+    void runGuardedTransaction(txInFlightRef, () => updatePriceMutation.mutateAsync(livePriceValue));
+  }
+
+  function handleClosePosition() {
+    if (!tradeViewTournament) {
+      pushToast("error", "Select a tournament first.");
+      return;
+    }
+    if (!ensureWriteAccess("close_position", { tournamentId: tradeViewTournament.tournament_id })) {
+      return;
+    }
+    closePositionMutation.reset();
+    void runGuardedTransaction(txInFlightRef, () => closePositionMutation.mutateAsync());
+  }
 
   const pageTitle =
     route.page === "home"
@@ -715,11 +938,9 @@ export function App() {
       : route.page === "tournaments"
         ? "Tournaments"
       : route.page === "trade" || route.page === "tournament"
-          ? selectedTournament?.name ?? "Trade"
+          ? tradeViewTournament?.name ?? "Trade"
           : route.page === "leaderboard"
             ? "Leaderboard"
-            : route.page === "rewards"
-              ? "Rewards"
             : route.page === "vault"
               ? "My Vault"
               : "Admin";
@@ -732,8 +953,6 @@ export function App() {
   const shellActiveKey =
     route.page === "tournament" || route.page === "trade"
       ? "trade"
-      : route.page === "rewards"
-        ? "rewards"
       : route.page === "vault"
         ? "vault"
         : route.page;
@@ -743,7 +962,6 @@ export function App() {
     { key: "tournaments", label: "Tournaments", icon: <LayoutDashboard size={16} />, onClick: () => setRoute({ page: "tournaments" }) },
     { key: "trade", label: "Trade", icon: <BarChart3 size={16} />, onClick: () => setRoute(tradeRoute) },
     { key: "leaderboard", label: "Leaderboard", icon: <Trophy size={16} />, onClick: () => setRoute({ page: "leaderboard" }) },
-    { key: "rewards", label: "Rewards", icon: <Coins size={16} />, onClick: () => setRoute({ page: "rewards" }) },
     { key: "vault", label: "My Vault", icon: <WalletCards size={16} />, onClick: () => setRoute({ page: "vault" }) },
     ...(isAdmin ? [{ key: "admin", label: "Admin", badge: "Admin", icon: <ShieldCheck size={16} />, onClick: () => setRoute({ page: "admin" }) }] : []),
   ];
@@ -807,6 +1025,99 @@ export function App() {
         currentTradeCount: tradeHistory.length,
       })
     : false;
+  const leaderboardTournamentState = selectedTournamentState;
+  const leaderboardIsUpcoming = leaderboardTournamentState === "Upcoming";
+  const leaderboardIsActive = leaderboardTournamentState === "Live";
+  const leaderboardIsEndedPending = leaderboardTournamentState === "Ended";
+  const leaderboardIsSettled =
+    leaderboardTournamentState === "Settled" || leaderboardTournamentState === "Claim Open";
+  const leaderboardHasTrades = leaderboardProjection.qualified.length > 0;
+  const leaderboardHasJoinedNoTrade = Boolean(participant) && !participantQualified;
+  const leaderboardHeaderCopy = leaderboardIsUpcoming
+    ? "Leaderboard opens when trading begins."
+    : leaderboardIsActive
+      ? "Live BTC rankings update as traders place positions and climb Return %."
+      : leaderboardIsEndedPending
+        ? "Tournament ended. Final leaderboard is being prepared."
+        : "Final rankings, winners, and prize split are locked in here.";
+  const leaderboardCountdownLabel = selectedTournament
+    ? describeCountdown(selectedTournament.start_time, selectedTournament.end_time, now)
+    : "No arena";
+  const leaderboardRankCaption = leaderboardIsUpcoming
+    ? "Waiting for trading to begin"
+    : participantLeaderboardEntry
+      ? "Among qualified traders"
+      : leaderboardHasJoinedNoTrade && leaderboardIsActive
+        ? "Trade to enter the board"
+        : "Unranked";
+  const leaderboardReturnCaption = leaderboardIsUpcoming
+    ? "Opens with the tournament"
+    : leaderboardIsActive
+      ? "Live tournament score"
+      : leaderboardIsEndedPending
+        ? "Final score pending settlement"
+        : "Final tournament score";
+  const leaderboardQualificationView = leaderboardIsUpcoming
+    ? {
+        title: "Waiting for start",
+        body: "Leaderboard opens when the tournament starts.",
+        qualified: false,
+        badgeLabel: "Waiting for start",
+      }
+    : leaderboardIsActive && leaderboardHasJoinedNoTrade
+      ? {
+          title: "Trade to qualify",
+          body: "Place your first trade to enter the leaderboard.",
+          qualified: false,
+          badgeLabel: "Trade to qualify",
+        }
+      : participantQualified
+        ? {
+            title: "Qualified",
+            body: "Eligible for reward ranking.",
+            qualified: true,
+            badgeLabel: "Qualified",
+          }
+        : leaderboardIsEndedPending || leaderboardIsSettled
+          ? {
+              title: "Not qualified",
+              body: "Joined traders without a valid trade are excluded from reward ranking.",
+              qualified: false,
+              badgeLabel: "Not qualified",
+            }
+          : {
+              title: "Trade to qualify",
+              body: "Place at least one trade to qualify.",
+              qualified: false,
+              badgeLabel: "Trade to qualify",
+            };
+  const showLeaderboardEmptyState = !leaderboardHasTrades && !leaderboardQuery.isLoading;
+  const leaderboardEmptyState = leaderboardIsUpcoming
+    ? {
+        title: "Tournament has not started yet",
+        copy: "Leaderboard opens when the tournament starts.",
+        actionLabel: participant ? "View Tournament" : "Join Arena",
+      }
+    : leaderboardIsActive
+      ? {
+          title: "No trades yet",
+          copy: "Be the first to place a trade.",
+          actionLabel: "Place first trade",
+        }
+      : leaderboardIsEndedPending
+        ? {
+            title: "Tournament ended",
+            copy: "No qualified traders found.",
+            actionLabel: "View Tournament",
+          }
+        : {
+            title: "Final leaderboard complete.",
+            copy: "Final rankings and prize split are ready.",
+            actionLabel: "View Tournament",
+          };
+  const showNotQualifiedSection =
+    (leaderboardIsEndedPending || leaderboardIsSettled) &&
+    leaderboardProjection.inactive.length > 0;
   const claimableRewardValue = participant ? toBigIntValue(participant.claimable_reward) : 0n;
   const settledRewardValue = participantWinner ? toBigIntValue(participantWinner.payout) : 0n;
   const canClaimReward =
@@ -814,6 +1125,22 @@ export function App() {
     selectedTournament?.status === "Settled" &&
     Boolean(participant) &&
     claimableRewardValue > 0n;
+
+  function handleClaimReward() {
+    if (!selectedTournament) {
+      pushToast("error", "Select a tournament first.");
+      return;
+    }
+    if (!canClaimReward) {
+      pushToast("error", "No claimable reward available.");
+      return;
+    }
+    if (!ensureWriteAccess("claim_reward", { tournamentId: selectedTournament.tournament_id })) {
+      return;
+    }
+    claimRewardMutation.reset();
+    void runGuardedTransaction(txInFlightRef, () => claimRewardMutation.mutateAsync());
+  }
   const rewardStatus = getRewardStatus({
     participant,
     participantQualified,
@@ -838,13 +1165,6 @@ export function App() {
           : rewardStatus === "Not qualified" || rewardStatus === "Not eligible"
             ? "No reward available for this tournament"
             : "Pending settlement";
-  const lifecycleActionAvailable =
-    isAdmin &&
-    Boolean(selectedTournament) &&
-    (selectedTournamentState === "Settling" || selectedTournamentState === "Ended");
-  const lifecycleActionLabel = selectedTournament?.status === "Ended"
-    ? "End & Settle Tournament"
-    : "End & Settle Tournament";
   const currentUserTradeCount = tradeHistory.filter((item) => item.action === "OPEN").length;
   const leaderboardUiEntries: UiLeaderboardEntry[] = leaderboardProjection.qualified.map((entry) => ({
     rank: entry.rank,
@@ -900,8 +1220,8 @@ export function App() {
           id: `${selectedTournament.tournament_id}-${participant.position.direction}`,
           tournamentName: selectedTournament.name,
           side: participant.position.direction === "Long" ? "long" : "short",
-          entryPrice: Number(toBigIntValue(participant.position.entry_price)),
-          currentPrice: Number(currentPriceValue),
+          entryPrice: fromChainPriceValue(participant.position.entry_price),
+          currentPrice: fromChainPriceValue(currentPriceValue),
           pnlPercent: Number(participant.return_percentage_bps) / 100,
           endsAt: describeCountdown(selectedTournament.start_time, selectedTournament.end_time, now),
           status: "open",
@@ -954,8 +1274,8 @@ export function App() {
     },
     {
       label: "Pending Settlement",
-      value: String(tournaments.filter((t) => getTournamentLifecycleState(t, now) === "Settling").length),
-      meta: "Need admin chain action",
+      value: String(tournaments.filter((t) => getTournamentLifecycleState(t, now) === "Ended").length),
+      meta: "Awaiting live engine processing",
       tone: "warning" as const,
     },
     {
@@ -964,6 +1284,17 @@ export function App() {
       meta: "Winners can withdraw now",
     },
   ];
+  const adminLifecycleTournaments = tournaments.map((tournament) => {
+    const lifecycle = getTournamentLifecycleState(tournament, now);
+    return {
+      tournament,
+      lifecycle,
+      statusLabel: mapStatusLabel(lifecycle),
+      statusKind: mapStatusKind(lifecycle),
+      countdown: describeCountdown(tournament.start_time, tournament.end_time, now),
+      needsSettlement: lifecycle === "Ended",
+    };
+  });
 
   const vaultCards = participant
     ? [
@@ -1007,6 +1338,173 @@ export function App() {
         { label: "Tournaments", value: "0", meta: "Not joined" },
       ];
 
+  const homeTournament = preferredTradeTournament;
+  const homeTournamentState = homeTournament
+    ? getTournamentLifecycleState(homeTournament, now)
+    : null;
+  const homeTournamentStatusKind = homeTournamentState
+    ? mapStatusKind(homeTournamentState)
+    : "soon";
+  const homeTournamentStatusLabel = homeTournamentState
+    ? mapStatusLabel(homeTournamentState)
+    : "Soon";
+  const totalPrizePoolValue = tournaments.reduce(
+    (acc, tournament) => acc + toBigIntValue(tournament.prize_pool),
+    0n,
+  );
+  const activeTournamentCount = tournaments.filter((tournament) => {
+    const state = getTournamentLifecycleState(tournament, now);
+    return state === "Live" || state === "Upcoming";
+  }).length;
+  const heroPrimaryLabel = hasJoinedTournament || hasOpenPosition ? "Continue Trading" : "View Tournaments";
+  const heroPrimaryAction = hasJoinedTournament || hasOpenPosition
+    ? () => setRoute(tradeRoute)
+    : () => setRoute({ page: "tournaments" });
+  const heroStats = [
+    {
+      label: "Active tournaments",
+      value: activeTournamentCount ? String(activeTournamentCount) : "0",
+    },
+    {
+      label: "Total prize pool",
+      value: totalPrizePoolValue > 0n ? formatPlanck(totalPrizePoolValue) : "Waiting for first pool",
+    },
+    {
+      label: "Real-time leaderboard",
+      value: homeTournament
+        ? leaderboardProjection.qualified.length
+          ? `${leaderboardProjection.qualified.length} ranked now`
+          : "Waiting for first trade"
+        : "Standings update live",
+    },
+  ];
+  const userStatusHelper = !account
+    ? "Connect your wallet to track balance, rank, return %, and current vault value."
+    : participant && homeTournament
+      ? `You are competing in ${homeTournament.name}.`
+      : homeTournament
+        ? `Join ${homeTournament.name} to start trading with virtual balance.`
+        : "Join the next arena to start trading with virtual balance.";
+  const userStatusActionLabel = !account
+    ? "Connect Wallet"
+    : hasJoinedTournament || hasOpenPosition
+      ? "Continue Trading"
+      : "Join Arena";
+  const userStatusAction = !account
+    ? handleConnectWallet
+    : hasJoinedTournament || hasOpenPosition
+      ? () => setRoute(tradeRoute)
+      : () => setRoute({ page: "tournaments" });
+  const quickActions: QuickActionItem[] = [
+    {
+      id: "join-arena",
+      title: "Join Arena",
+      description: "Browse live BTC tournaments and reserve a place before the timer starts.",
+      buttonLabel: "View Tournaments",
+      onClick: () => setRoute({ page: "tournaments" }),
+      icon: <LayoutDashboard size={18} />,
+      variant: "primary",
+    },
+    {
+      id: "open-trade",
+      title: "Open Trade",
+      description: "Jump into the trade terminal and manage your next BTC position.",
+      buttonLabel: "Open Trade",
+      onClick: () => setRoute(tradeRoute),
+      icon: <BarChart3 size={18} />,
+      variant: "secondary",
+    },
+    {
+      id: "view-vault",
+      title: "View Vault",
+      description: "Check rewards, rank, return %, and your current tournament vault value.",
+      buttonLabel: "View Vault",
+      onClick: () => setRoute({ page: "vault" }),
+      icon: <WalletCards size={18} />,
+      variant: "secondary",
+    },
+  ];
+  const activeHomeTournaments = tournaments
+    .filter((tournament) => {
+      const state = getTournamentLifecycleState(tournament, now);
+      return state === "Live" || state === "Upcoming";
+    })
+    .map((tournament) => {
+      const state = getTournamentLifecycleState(tournament, now);
+      return {
+        tournament,
+        statusLabel: mapStatusLabel(state),
+        statusKind: mapStatusKind(state),
+        entryFee: formatPlanck(tournament.entry_fee),
+        prizePool: formatPlanck(tournament.prize_pool),
+        players: `${tournament.participant_count}/${tournament.max_participants}`,
+        timeLeft: describeCountdown(tournament.start_time, tournament.end_time, now),
+        endsAt: formatTimestamp(tournament.end_time),
+        primaryLabel: state === "Live" ? "Trade" : "View Tournament",
+        onPrimary: () => openTournament(tournament.tournament_id),
+        secondaryLabel: state === "Upcoming" ? "Join Arena" : undefined,
+        onSecondary: state === "Upcoming" ? () => handleJoinTournament(tournament) : undefined,
+        secondaryDisabled:
+          state === "Upcoming"
+            ? Boolean(getJoinReason(tournament, now)) || joinMutation.isPending
+            : undefined,
+        secondaryTitle: state === "Upcoming" ? getJoinReason(tournament, now) ?? undefined : undefined,
+        active: selectedTournamentId === tournament.tournament_id,
+      };
+    });
+  const pastHomeTournaments = tournaments
+    .filter((tournament) => {
+      const state = getTournamentLifecycleState(tournament, now);
+      return state !== "Live" && state !== "Upcoming";
+    })
+    .map((tournament) => {
+      const state = getTournamentLifecycleState(tournament, now);
+      const winnerForAccount = account
+        ? tournament.winners.find((winner) => sameAddress(winner.participant, account.address))
+        : null;
+      return {
+        tournament,
+        statusLabel: mapStatusLabel(state),
+        statusKind: mapStatusKind(state),
+        entryFee: formatPlanck(tournament.entry_fee),
+        prizePool: formatPlanck(tournament.prize_pool),
+        players: `${tournament.participant_count}/${tournament.max_participants}`,
+        timeLeft: describeCountdown(tournament.start_time, tournament.end_time, now),
+        endsAt: formatTimestamp(tournament.end_time),
+        primaryLabel: state === "Claim Open" && winnerForAccount ? "Claim Rewards" : "View Results",
+        onPrimary: () =>
+          state === "Claim Open" && winnerForAccount
+            ? setRoute({ page: "vault" })
+            : openTournament(tournament.tournament_id),
+        active: selectedTournamentId === tournament.tournament_id,
+      };
+    });
+  const claimRewardItems = account
+    ? tournaments
+        .filter((tournament) =>
+          tournament.winners.some((winner) => sameAddress(winner.participant, account.address)),
+        )
+        .map((tournament) => {
+          const winner = tournament.winners.find((entry) =>
+            sameAddress(entry.participant, account.address),
+          )!;
+          const readyToClaim =
+            tournament.tournament_id === selectedTournament?.tournament_id && canClaimReward;
+
+          return {
+            id: `reward-${tournament.tournament_id}`,
+            tournamentName: tournament.name,
+            amount: formatPlanck(winner.payout),
+            rankLabel: `Rank #${winner.rank}`,
+            statusLabel: readyToClaim ? "Ready to claim" : "Payout recorded",
+            detail: readyToClaim
+              ? "Your payout is ready. Open your vault to claim it."
+              : "Your finishing payout is recorded for this settled tournament.",
+            onOpen: () => setRoute({ page: "vault" }),
+          };
+        })
+    : [];
+
   return (
     <div className="min-h-screen bg-[var(--bg)] text-slate-100">
       <AnimatePresence>
@@ -1048,7 +1546,7 @@ export function App() {
                 <div className="hidden sm:block">
                   <PriceTicker
                     label="BTC/USD"
-                    price={livePriceValue ? `$${livePriceValue.toLocaleString()}` : "BTC --"}
+                    price={livePriceLabel}
                     change={`${livePriceChange24h >= 0 ? "+" : ""}${livePriceChange24h.toFixed(2)}%`}
                   />
                 </div>
@@ -1119,304 +1617,53 @@ export function App() {
                 className="space-y-6"
               >
           {route.page === "home" ? (
-            <>
-              <motion.section variants={fadeUp}>
-                <div className="relative overflow-hidden rounded-[22px] border border-[var(--border-soft)] bg-[var(--panel)] px-6 py-8 sm:px-8 sm:py-8">
-                  <BGPattern
-                    variant="grid"
-                    mask="fade-edges"
-                    size={28}
-                    fill="rgba(103,247,177,0.05)"
-                    className="opacity-60"
-                  />
-                  <div className="relative grid gap-6 xl:grid-cols-[1.1fr_0.9fr] xl:items-start">
-                    <div className="space-y-5">
-                      <div className="inline-flex rounded-full border border-[var(--border-hi)] bg-[rgba(103,247,177,0.06)] px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--primary-strong)]">
-                        {hasClaimableReward
-                          ? "Claim ready"
-                          : hasOpenPosition
-                            ? "Active arena"
-                            : firstTimeUser
-                              ? "First arena"
-                              : "Control centre"}
-                      </div>
-                      <div className="inline-flex">
-                        <PriceTicker
-                          label="BTC/USD"
-                          price={livePriceValue ? `$${livePriceValue.toLocaleString()}` : "BTC --"}
-                          change={`${livePriceChange24h >= 0 ? "+" : ""}${livePriceChange24h.toFixed(2)}%`}
-                        />
-                      </div>
-                      <AnimatedText
-                        text="Compete in BTC Trading Tournaments"
-                        className="items-start"
-                        textClassName="text-left text-3xl font-bold tracking-[-0.03em] text-[var(--text)] sm:text-4xl"
-                        underlineClassName="text-[var(--primary)]"
-                      />
-                      <p className="max-w-xl text-base leading-7 text-[var(--muted)]">
-                        {hasClaimableReward
-                          ? "Your arena is settled. Review your final result and claim the exact VARA reward now."
-                          : hasOpenPosition
-                            ? "Your arena is live. Keep trading with virtual balance while the leaderboard updates around the tournament price."
-                            : endedUnqualified
-                              ? "This arena finished without a qualifying trade. Review the result and jump into the next tournament."
-                              : firstTimeUser
-                                ? "Choose an arena, join with VARA, and place your first paper BTC trade to qualify for rewards."
-                                : "Trade with virtual balance. Win real VARA from an on-chain prize pool."}
-                      </p>
-                      <div className="flex flex-wrap gap-3">
-                        {!account ? (
-                          <Button
-                            variant="primary"
-                            onClick={handleConnectWallet}
-                            disabled={walletStatus === "loading" || wallets.length === 0}
-                          >
-                            Connect Wallet
-                          </Button>
-                        ) : hasClaimableReward ? (
-                          <Button variant="primary" onClick={() => setRoute({ page: "rewards" })}>
-                            Claim Reward
-                          </Button>
-                        ) : hasJoinedTournament ? (
-                          <Button variant="primary" onClick={() => setRoute(tradeRoute)}>
-                            Continue Trading
-                          </Button>
-                        ) : (
-                          <Button variant="primary" onClick={() => setRoute({ page: "tournaments" })}>
-                            Start Your First Arena
-                          </Button>
-                        )}
-                        <Button variant="secondary" onClick={() => setRoute({ page: "tournaments" })}>
-                          View Arenas
-                        </Button>
-                      </div>
-                      {account ? (
-                        <div className="grid gap-3 sm:grid-cols-3">
-                          <InfoStat
-                            label="Current Rank"
-                            value={participantLeaderboardEntry ? `#${participantLeaderboardEntry.rank}` : "—"}
-                            inverted
-                          />
-                          <InfoStat
-                            label="PnL %"
-                            value={participant ? formatPercentBps(participant.return_percentage_bps) : "—"}
-                            inverted
-                          />
-                          <InfoStat
-                            label="Virtual Balance"
-                            value={participant ? toBigIntValue(participant.final_value).toLocaleString() : "—"}
-                            inverted
-                          />
-                        </div>
-                      ) : null}
-                    </div>
-
-                    <div className="space-y-4">
-                      {hasClaimableReward ? (
-                        <ClaimCard
-                          title="Claim your arena reward"
-                          status="Settlement complete. Your payout is ready on-chain."
-                          reward={rewardAmountLabel}
-                          rank={rewardRankLabel}
-                          returnPct={participant ? formatPercentBps(participant.return_percentage_bps) : "—"}
-                          tone="claimable"
-                          action={
-                            <Button
-                              variant="primary"
-                              onClick={() => {
-                                claimRewardMutation.reset();
-                                claimRewardMutation.mutate();
-                              }}
-                              disabled={!canClaimReward || claimRewardMutation.isPending}
-                            >
-                              {claimRewardMutation.isPending ? "Claiming..." : "Claim Reward"}
-                            </Button>
-                          }
-                        />
-                      ) : (
-                        <div className="product-card p-5">
-                          <div className="flex items-center justify-between gap-3">
-                            <div>
-                              <p className="section-kicker">Live Arena Summary</p>
-                              <p className="mt-2 text-lg font-semibold text-[var(--text)]">
-                                {selectedTournament?.name ?? "No arena selected"}
-                              </p>
-                            </div>
-                            {selectedTournamentState ? (
-                              <UiStatusPill kind={selectedTournamentStatusKind} label={selectedTournamentStatusLabel} />
-                            ) : null}
-                          </div>
-                          <div className="mt-5 grid gap-3 sm:grid-cols-2">
-                            <InfoStat label="Prize Pool" value={selectedTournament ? formatPlanck(selectedTournament.prize_pool) : "—"} inverted />
-                            <InfoStat label="Participants" value={selectedTournament ? `${selectedTournament.participant_count}/${selectedTournament.max_participants}` : "—"} inverted />
-                            <InfoStat label="Countdown" value={selectedTournament ? describeCountdown(selectedTournament.start_time, selectedTournament.end_time, now) : "Choose an arena"} inverted />
-                            <InfoStat label="Scoring" value="Top Return %" inverted />
-                          </div>
-                          <div className="mt-4 rounded-[14px] border border-[var(--border-soft)] bg-[rgba(8,20,15,0.66)] p-4">
-                            <p className="text-sm font-semibold text-[var(--text)]">{primaryArenaAction}</p>
-                            <p className="mt-2 text-sm leading-6 text-[var(--muted)]">
-                              {firstTimeUser
-                                ? "Every trader starts with the same virtual balance. One valid trade qualifies you for rewards."
-                                : "Live arenas stay fair by scoring every position against the same tournament price feed."}
-                            </p>
-                          </div>
-                        </div>
-                      )}
-
-                      {endedUnqualified ? (
-                        <ClaimCard
-                          title="Not qualified"
-                          status="No trades were placed, so this arena did not qualify for reward ranking."
-                          reward="No reward available for this tournament"
-                          rank="—"
-                          returnPct={participant ? formatPercentBps(participant.return_percentage_bps) : "—"}
-                          tone="warning"
-                        />
-                      ) : null}
-                    </div>
-                  </div>
-                </div>
-              </motion.section>
-
-              <motion.section variants={fadeUp}>
-                {firstTimeUser ? (
-                  <div className="space-y-4">
-                    <div>
-                      <p className="section-kicker">Start your first arena</p>
-                      <p className="mt-2 text-sm text-[var(--muted)]">
-                        Follow the first-time flow once. After your first trade, the app becomes a live control centre.
-                      </p>
-                    </div>
-                    <ProgressTracker
-                      steps={[
-                        { id: "01", title: "Choose arena", copy: "Compare prize pools, timing, and entry fee.", active: !hasJoinedTournament },
-                        { id: "02", title: "Join with VARA", copy: "Pay the exact entry fee to lock your seat.", active: hasJoinedTournament && tradeHistory.length === 0, done: hasJoinedTournament },
-                        { id: "03", title: "Place your first paper trade", copy: "Open one valid long or short position to qualify.", active: hasJoinedTournament && tradeHistory.length === 0, done: tradeHistory.length > 0 },
-                      ]}
-                    />
-                    <div className="product-card p-5">
-                      <p className="section-kicker">How scoring works</p>
-                      <div className="mt-3 space-y-2 text-sm leading-6 text-[var(--muted)]">
-                        <p>All traders begin with the same virtual balance.</p>
-                        <p>Return % is calculated from the tournament price used for scoring, not your wallet balance.</p>
-                        <p>At least one valid trade is required to qualify for rewards.</p>
-                      </div>
-                    </div>
-                  </div>
-                ) : (
-                  <StepCards />
-                )}
-              </motion.section>
-
-              <motion.section variants={fadeUp}>
-                <div className="grid gap-4 lg:grid-cols-[1.15fr_0.85fr]">
-                  <div className="product-card p-5">
-                    <div className="flex items-center justify-between gap-3">
-                      <div>
-                        <p className="section-kicker">Current Focus</p>
-                        <p className="mt-2 text-lg font-semibold text-[var(--text)]">What to do next</p>
-                      </div>
-                      <ClockCountdown size={18} className="text-[var(--primary-strong)]" />
-                    </div>
-                    <div className="mt-4 rounded-[14px] border border-[var(--border-soft)] bg-[rgba(8,20,15,0.72)] p-4">
-                      <p className="text-base font-semibold text-[var(--text)]">{primaryArenaAction}</p>
-                      <p className="mt-2 text-sm leading-6 text-[var(--muted)]">
-                        {hasClaimableReward
-                          ? "Open the rewards view to claim your payout and review the final leaderboard."
-                          : hasOpenPosition
-                            ? "Your PnL updates from the tournament price. Watch the chart and manage risk before the timer ends."
-                            : selectedTournament
-                              ? "This arena is ready. Join, place a trade, and qualify for the prize pool."
-                              : "No arena is selected yet. Browse arenas and pick the one you want to play."}
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="product-card p-5">
-                    <p className="section-kicker">Glossary</p>
-                    <div className="mt-4 space-y-3 text-sm text-[var(--muted)]">
-                      <p><span className="font-semibold text-[var(--text)]">Paper trading:</span> positions use virtual balance only.</p>
-                      <p><span className="font-semibold text-[var(--text)]">Prize pool:</span> real VARA collected from entry fees.</p>
-                      <p><span className="font-semibold text-[var(--text)]">Return %:</span> the score used to rank traders fairly.</p>
-                      <p><span className="font-semibold text-[var(--text)]">Settlement:</span> the moment final winners and payouts are locked on-chain.</p>
-                    </div>
-                  </div>
-                </div>
-              </motion.section>
-
-              <motion.section variants={fadeUp}>
-                <div className="space-y-3">
-                  <div className="flex items-center justify-between gap-3">
-                    <div>
-                      <p className="section-kicker">Featured Arenas</p>
-                      <p className="mt-2 text-sm text-[var(--muted)]">
-                        Join a BTC arena, place a qualifying trade, and push for the top Return %.
-                      </p>
-                    </div>
-                    <Button variant="secondary" onClick={() => setRoute({ page: "tournaments" })}>
-                      View All
-                    </Button>
-                  </div>
-                  {renderMutationNotice(joinMutation, {
-                    pending: "Join transaction submitted...",
-                    success: "Joined tournament.",
-                  })}
-                  {tournamentsQuery.isLoading ? (
-                    <CardSkeletonGrid count={3} />
-                  ) : featuredTournaments.length ? (
-                    <div className="space-y-3">
-                      {featuredTournaments.map((tournament) => (
-                        <FeatureTournamentRow
-                          key={tournament.tournament_id}
-                          tournament={tournament}
-                          statusLabel={mapStatusLabel(getTournamentLifecycleState(tournament, now))}
-                          statusKind={mapStatusKind(getTournamentLifecycleState(tournament, now))}
-                          entryFee={formatPlanck(tournament.entry_fee)}
-                          prizePool={formatPlanck(tournament.prize_pool)}
-                          players={`${tournament.participant_count}/${tournament.max_participants}`}
-                          timeLeft={describeCountdown(tournament.start_time, tournament.end_time, now)}
-                          endsAt={formatTimestamp(tournament.end_time)}
-                          primaryLabel="Trade"
-                          onPrimary={() => openTournament(tournament.tournament_id)}
-                          secondaryLabel="Enter"
-                          secondaryDisabled={Boolean(
-                            getJoinReason(tournament, now, txAccount, hasProgramId, walletActionReason),
-                          ) || joinMutation.isPending}
-                          secondaryTitle={
-                            getJoinReason(tournament, now, txAccount, hasProgramId, walletActionReason) ?? undefined
-                          }
-                          onSecondary={() => {
-                            joinMutation.reset();
-                            joinMutation.mutate(tournament);
-                          }}
-                          active={selectedTournamentId === tournament.tournament_id}
-                        />
-                      ))}
-                    </div>
-                  ) : (
-                    <EmptyStatePanel
-                      eyebrow="Arenas"
-                      title="No arenas are live right now"
-                      copy="When the next BTC tournament opens, you will be able to review prize pool, timing, and entry fee here."
-                      action={<Button variant="secondary" onClick={() => setRoute({ page: "admin" })}>View Admin Status</Button>}
-                    />
-                  )}
-                </div>
-              </motion.section>
-            </>
+            <HomePage
+              livePriceValue={livePriceValue}
+              livePriceLabel={livePriceLabel}
+              livePriceChangeLabel={`${livePriceChange24h >= 0 ? "+" : ""}${livePriceChange24h.toFixed(2)}%`}
+              walletLabel={account ? shortAddress(account.address) : "Wallet not connected"}
+              walletDetail={account ? (balance ? `${balance} VARA` : "Balance syncing") : "Connect to compete"}
+              walletStatusLabel={account ? (isAdmin ? "Admin wallet" : "Wallet ready") : "Disconnected"}
+              walletConnected={Boolean(account)}
+              heroPrimaryLabel={heroPrimaryLabel}
+              onHeroPrimary={heroPrimaryAction}
+              onHeroSecondary={() => setRoute({ page: "leaderboard" })}
+              heroStats={heroStats}
+              snapshotTournamentName={homeTournament?.name ?? "Next BTC Arena"}
+              snapshotTournamentPrice={currentPriceValue ? tournamentPriceLabel : "Waiting for price"}
+              snapshotBtcPrice={activeLivePrice ? livePriceLabel : "Loading BTC/USD"}
+              snapshotPlayersJoined={homeTournament ? `${homeTournament.participant_count}/${homeTournament.max_participants}` : "0 / 0"}
+              snapshotPrizePool={homeTournament ? formatPlanck(homeTournament.prize_pool) : "Prize pool pending"}
+              snapshotTimeLeft={homeTournament ? describeCountdown(homeTournament.start_time, homeTournament.end_time, now) : "Waiting for next arena"}
+              snapshotStatusLabel={homeTournamentStatusLabel}
+              snapshotStatusKind={homeTournamentStatusKind}
+              userStatusConnected={Boolean(account)}
+              userStatusBalance={account ? (balance ? `${balance} VARA` : "Balance syncing") : "—"}
+              userStatusJoined={participant && homeTournament ? homeTournament.name : homeTournament ? "Not joined yet" : "No arena selected"}
+              userStatusRank={participantLeaderboardEntry ? `#${participantLeaderboardEntry.rank}` : participant ? "Waiting for first rank" : "—"}
+              userStatusReturn={participant ? formatPercentBps(participant.return_percentage_bps) : "—"}
+              userStatusVaultValue={participant ? toBigIntValue(participant.final_value).toLocaleString() : "—"}
+              userStatusHelper={userStatusHelper}
+              userStatusActionLabel={userStatusActionLabel}
+              onUserStatusAction={userStatusAction}
+              quickActions={quickActions}
+            />
           ) : null}
 
           {route.page === "tournaments" ? (
             <motion.section variants={fadeUp}>
-              <Section
-                title="Arenas"
-                subtitle="Review timing, prize pool, and entry fee. Join once, place at least one trade, and qualify for rewards."
-                action={
-                  <span className="text-xs font-medium uppercase tracking-[0.2em] text-slate-500">
-                    {tournaments.length ? `${tournaments.length} available` : "No arenas"}
-                  </span>
-                }
-              >
+              <div className="space-y-4">
+                <div className="rounded-[12px] border border-[var(--border-soft)] bg-[var(--panel)] p-6 md:p-8">
+                  <div className="flex items-start justify-between">
+                    <div>
+                      <h1 className="text-2xl font-bold text-[var(--text)]">Tournaments</h1>
+                      <p className="mt-2 text-[var(--muted)]">Review active arenas, reward payouts, and past BTC tournaments in one place.</p>
+                    </div>
+                    <span className="text-xs font-medium uppercase tracking-[0.2em] text-slate-500">
+                      {tournaments.length ? `${tournaments.length} available` : "No arenas"}
+                    </span>
+                  </div>
+                </div>
                 {tournamentsQuery.isLoading ? <CardSkeletonGrid count={6} /> : null}
                 {tournamentsQuery.error ? (
                   <Notice tone="error">{extractErrorMessage(tournamentsQuery.error)}</Notice>
@@ -1432,45 +1679,132 @@ export function App() {
                     copy="When the next BTC tournament opens, this screen will show entry fee, timing, prize pool, and the action to join."
                   />
                 ) : null}
-                <div className="space-y-3">
-                  {tournaments.map((tournament) => (
-                    <FeatureTournamentRow
-                      key={tournament.tournament_id}
-                      tournament={tournament}
-                      statusLabel={mapStatusLabel(getTournamentLifecycleState(tournament, now))}
-                      statusKind={mapStatusKind(getTournamentLifecycleState(tournament, now))}
-                      entryFee={formatPlanck(tournament.entry_fee)}
-                      prizePool={formatPlanck(tournament.prize_pool)}
-                      players={`${tournament.participant_count}/${tournament.max_participants}`}
-                      timeLeft={describeCountdown(tournament.start_time, tournament.end_time, now)}
-                      endsAt={formatTimestamp(tournament.end_time)}
-                      primaryLabel="Trade"
-                      onPrimary={() => openTournament(tournament.tournament_id)}
-                      secondaryLabel="Enter"
-                      secondaryDisabled={Boolean(
-                        getJoinReason(tournament, now, txAccount, hasProgramId, walletActionReason),
-                      ) || joinMutation.isPending}
-                      secondaryTitle={
-                        getJoinReason(tournament, now, txAccount, hasProgramId, walletActionReason) ?? undefined
-                      }
-                      onSecondary={() => {
-                        joinMutation.reset();
-                        joinMutation.mutate(tournament);
-                      }}
-                      active={selectedTournamentId === tournament.tournament_id}
-                    />
-                  ))}
-                </div>
-              </Section>
+                <TournamentSection
+                  title="🔥 Active Tournaments"
+                  subtitle="Join a live or upcoming BTC arena and start competing on Return %."
+                >
+                  {activeHomeTournaments.length ? (
+                    <div className="space-y-3">
+                      {activeHomeTournaments.map((item) => (
+                        <FeatureTournamentRow
+                          key={item.tournament.tournament_id}
+                          tournament={item.tournament}
+                          statusLabel={item.statusLabel}
+                          statusKind={item.statusKind}
+                          entryFee={item.entryFee}
+                          prizePool={item.prizePool}
+                          players={item.players}
+                          timeLeft={item.timeLeft}
+                          endsAt={item.endsAt}
+                          primaryLabel={item.primaryLabel}
+                          onPrimary={item.onPrimary}
+                          secondaryLabel={item.secondaryLabel}
+                          secondaryDisabled={item.secondaryDisabled}
+                          secondaryTitle={item.secondaryTitle}
+                          onSecondary={item.onSecondary}
+                          active={item.active}
+                        />
+                      ))}
+                    </div>
+                  ) : (
+                    <EmptySection copy="No active tournaments yet. The next BTC arena will appear here." />
+                  )}
+                </TournamentSection>
+
+                <TournamentSection
+                  title="🟡 Claim Rewards"
+                  subtitle="Settled reward positions and payout records appear here."
+                >
+                  {claimRewardItems.length ? (
+                    <div className="space-y-3">
+                      {claimRewardItems.map((reward) => (
+                        <div
+                          key={reward.id}
+                          className="rounded-[18px] border border-white/[0.06] bg-white/[0.02] p-4"
+                        >
+                          <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                            <div>
+                              <p className="text-base font-semibold text-[var(--text)]">{reward.tournamentName}</p>
+                              <p className="mt-2 text-sm text-[var(--muted)]">{reward.detail}</p>
+                              <div className="mt-3 flex flex-wrap gap-2">
+                                <SectionBadge>{reward.rankLabel}</SectionBadge>
+                                <SectionBadge tone="warning">{reward.statusLabel}</SectionBadge>
+                              </div>
+                            </div>
+                            <div className="sm:text-right">
+                              <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--subtle)]">
+                                Prize pool payout
+                              </p>
+                              <p className="mt-2 text-lg font-semibold text-[var(--long)]">{reward.amount}</p>
+                              <div className="mt-4">
+                                <Button variant="secondary" onClick={reward.onOpen} fullWidth className="sm:w-auto">
+                                  Open Vault
+                                </Button>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <EmptySection copy="No reward records yet. Claimable or settled payouts will show here after tournament settlement." />
+                  )}
+                </TournamentSection>
+
+                <motion.details
+                  variants={fadeUp}
+                  className="product-card p-5 sm:p-6"
+                >
+                  <summary className="flex cursor-pointer list-none items-center justify-between gap-3">
+                    <div>
+                      <p className="text-lg font-semibold text-[var(--text)]">📁 Past Tournaments</p>
+                      <p className="mt-2 text-sm text-[var(--muted)]">
+                        Review ended and settled arenas without cluttering the main view.
+                      </p>
+                    </div>
+                    <span className="rounded-full border border-white/[0.08] bg-white/[0.03] px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--subtle)]">
+                      {pastHomeTournaments.length}
+                    </span>
+                  </summary>
+
+                  <div className="mt-5 space-y-3">
+                    {pastHomeTournaments.length ? (
+                      pastHomeTournaments.map((item) => (
+                        <FeatureTournamentRow
+                          key={`past-${item.tournament.tournament_id}`}
+                          tournament={item.tournament}
+                          statusLabel={item.statusLabel}
+                          statusKind={item.statusKind}
+                          entryFee={item.entryFee}
+                          prizePool={item.prizePool}
+                          players={item.players}
+                          timeLeft={item.timeLeft}
+                          endsAt={item.endsAt}
+                          primaryLabel={item.primaryLabel}
+                          onPrimary={item.onPrimary}
+                          active={item.active}
+                        />
+                      ))
+                    ) : (
+                      <EmptySection copy="Past tournaments will appear here after the first arena ends." />
+                    )}
+                  </div>
+                </motion.details>
+              </div>
             </motion.section>
           ) : null}
 
           {route.page === "tournament" || route.page === "trade" ? (
             <motion.section variants={fadeUp}>
-              {!selectedTournament ? (
+              {!tradeViewTournament ? (
                 <div className="rounded-[12px] border border-[var(--border-soft)] bg-[var(--panel)] p-4">
                   <p className="section-kicker">Trade</p>
-                  <Notice tone="warning">Open a tournament from the tournaments page.</Notice>
+                  <Notice tone="warning">Select a tournament to start trading.</Notice>
+                  <div className="mt-4">
+                    <Button variant="primary" onClick={() => setRoute({ page: "tournaments" })}>
+                      View Tournaments
+                    </Button>
+                  </div>
                 </div>
               ) : (
                 <div className="space-y-6">
@@ -1504,29 +1838,12 @@ export function App() {
                     <div className="flex">
                       <Button
                         variant="primary"
-                        onClick={() => {
-                          joinMutation.reset();
-                          joinMutation.mutate(selectedTournament);
-                        }}
+                        onClick={() => handleJoinTournament(tradeViewTournament)}
                         disabled={
-                          Boolean(
-                            getJoinReason(
-                              selectedTournament,
-                              now,
-                              txAccount,
-                              hasProgramId,
-                              walletActionReason,
-                            ),
-                          ) || joinMutation.isPending
+                          Boolean(getJoinReason(tradeViewTournament, now)) || joinMutation.isPending
                         }
                         title={
-                          getJoinReason(
-                            selectedTournament,
-                            now,
-                            txAccount,
-                            hasProgramId,
-                            walletActionReason,
-                          ) ?? undefined
+                          getJoinReason(tradeViewTournament, now) ?? undefined
                         }
                       >
                         Join Tournament
@@ -1534,141 +1851,111 @@ export function App() {
                     </div>
                   ) : null}
 
-                  {selectedTournamentState === "Settling" ? (
+                  {selectedTournamentState === "Ended" ? (
                     <div className="rounded-[12px] border border-[var(--border-soft)] bg-[var(--panel)] p-4">
                       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                         <div>
-                          <p className="section-kicker">Tournament Complete</p>
+                          <p className="section-kicker">Tournament Ended</p>
                           <p className="mt-2 text-sm text-[var(--muted)]">
-                            Trading is now closed. {isAdmin
-                              ? "Finalize the leaderboard and open claims for winners."
-                              : "The admin is finalizing settlement and prize distribution."}
+                            {isAdmin
+                              ? "Waiting for the live engine to finalize rankings and rewards on the next on-chain tick."
+                              : "Waiting for the tournament engine to finalize rankings and rewards."}
                           </p>
                         </div>
-                        {lifecycleActionAvailable ? (
-                          <Button
-                            variant="primary"
-                            onClick={() => {
-                              tournamentLifecycleMutation.reset();
-                              tournamentLifecycleMutation.mutate();
-                            }}
-                            disabled={tournamentLifecycleMutation.isPending}
-                          >
-                            {tournamentLifecycleMutation.isPending ? "Finalizing..." : lifecycleActionLabel}
-                          </Button>
-                        ) : null}
+                        <UiStatusPill kind="ended" label="Waiting for Keeper" />
                       </div>
                     </div>
                   ) : null}
 
-                  <div className="space-y-4">
-                    <MarketHeader
-                      title={selectedTournament.name}
-                      livePrice={livePriceValue ? `$${livePriceValue.toLocaleString()}` : "$0"}
-                      tournamentPrice={`$${currentPriceValue.toLocaleString()}`}
-                      syncStatus={syncStatusLabel}
-                      timeLeft={describeCountdown(selectedTournament.start_time, selectedTournament.end_time, now)}
-                      statusKind={selectedTournamentStatusKind}
-                      statusLabel={selectedTournamentStatusLabel}
-                    />
-
-                    <div className="grid gap-3 md:grid-cols-4">
-                      <InfoPanel title="Current Rank" value={participantLeaderboardEntry ? `#${participantLeaderboardEntry.rank}` : "—"} />
-                      <InfoPanel title="PnL %" value={participant ? formatPercentBps(participant.return_percentage_bps) : "—"} />
-                      <InfoPanel title="Virtual Balance" value={participant ? toBigIntValue(participant.final_value).toLocaleString() : "—"} />
-                      <div className="product-card-soft p-4">
-                        <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--subtle)]">Qualification</p>
-                        <div className="mt-3">
-                          <QualificationBadge qualified={participantQualified} />
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
-                    <TradingChart
-                      livePrice={livePriceValue ? `$${livePriceValue.toLocaleString()}` : "$0"}
-                      liveChange={`${livePriceChange24h >= 0 ? "+" : ""}${livePriceChange24h.toFixed(2)}%`}
-                      tournamentPrice={`$${currentPriceValue.toLocaleString()}`}
-                      priceHistory={liveHistory}
-                      tournamentPriceValue={currentPriceValue}
-                      entryPriceValue={
-                        participant?.position?.is_open
-                          ? toBigIntValue(participant.position.entry_price)
-                          : null
-                      }
-                    />
-                    <OrderPanel
-                      tournamentName={selectedTournament.name}
-                      timeLeft={describeCountdown(selectedTournament.start_time, selectedTournament.end_time, now)}
-                      prizePool={formatPlanck(selectedTournament.prize_pool)}
-                      direction={tradeDirection}
-                      onDirectionChange={setTradeDirection}
-                      size={tradeSize}
-                      onSizeChange={setTradeSize}
-                      availableBalance={participant ? toBigIntValue(participant.final_value).toLocaleString() : "Join to unlock"}
-                      entryPrice={`$${currentPriceValue.toLocaleString()}`}
-                      currentPrice={`$${livePriceValue.toLocaleString()}`}
-                      estimatedPnl={{
-                        value: formatSigned(estimatedTradePnl),
-                        tone: estimatedTradePnl > 0n ? "positive" : estimatedTradePnl < 0n ? "negative" : "default",
-                      }}
-                      actionLabel={tradeDirection === "Long" ? "Open Long Position" : "Open Short Position"}
-                      actionVariant={tradeDirection === "Long" ? "positive" : "danger"}
-                      onAction={handleOpenPosition}
-                      actionDisabled={Boolean(getTradingDisabledReason(selectedTournament, participant, now)) || openPositionMutation.isPending || Boolean(participant?.position?.is_open)}
-                      secondaryActionLabel={participant?.position?.is_open ? "Close Position" : undefined}
-                      onSecondaryAction={
-                        participant?.position?.is_open
-                          ? () => {
-                              closePositionMutation.reset();
-                              closePositionMutation.mutate();
-                            }
-                          : undefined
-                      }
-                      secondaryDisabled={!participant?.position?.is_open || closePositionMutation.isPending}
-                      helper={tournamentPriceHelperText}
-                      warning={tradeFormError ?? getTradingDisabledReason(selectedTournament, participant, now) ?? undefined}
-                    />
-                    </div>
-
-                    <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+                  <div className="grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1fr)_360px]">
+                    <div className="space-y-4">
+                      <MarketHeader
+                        title={tradeViewTournament.name}
+                        livePrice={livePriceLabel === "BTC --" ? "$0.00" : livePriceLabel}
+                        tournamentPrice={tournamentPriceLabel}
+                        syncStatus={syncStatusLabel}
+                        timeLeft={describeCountdown(tradeViewTournament.start_time, tradeViewTournament.end_time, now)}
+                        statusKind={selectedTournamentStatusKind}
+                        statusLabel={selectedTournamentStatusLabel}
+                        priceSourceLabel="Price source: Binance BTC/USDT"
+                        sourceNotice={marketSourceNotice}
+                      />
+                      <TradingChart
+                        livePrice={livePriceLabel === "BTC --" ? "$0.00" : livePriceLabel}
+                        liveChange={`${livePriceChange24h >= 0 ? "+" : ""}${livePriceChange24h.toFixed(2)}%`}
+                        tournamentPrice={tournamentPriceLabel}
+                        priceHistory={liveHistory}
+                        tournamentPriceValue={currentPriceValue}
+                        entryPriceValue={
+                          participant?.position?.is_open
+                            ? toBigIntValue(participant.position.entry_price)
+                            : null
+                        }
+                      />
                       <div className="rounded-[12px] border border-[var(--border-soft)] bg-[var(--panel)] p-4">
-                        <p className="section-kicker">My Vault</p>
-                        <div className="mt-4">
-                          <VaultStats cards={vaultCards} />
-                        </div>
-                        <div className="mt-4">
-                          <RewardPanel
-                            rankLabel={rewardRankLabel}
-                            returnLabel={participant ? formatPercentBps(participant.return_percentage_bps) : "—"}
-                            rewardLabel={rewardAmountLabel}
-                            statusLabel={rewardStatus}
-                          />
-                        </div>
-                        {renderMutationNotice(claimRewardMutation, {
-                          pending: "Claiming reward...",
-                          success: claimRewardMutation.data
-                            ? `Reward claimed: ${formatPlanck(claimRewardMutation.data)}`
-                            : "Reward claimed.",
-                        })}
-                        {participant ? (
-                          <div className="mt-4 flex flex-wrap gap-2">
-                            <Button
-                              variant="secondary"
-                              onClick={() => {
-                                claimRewardMutation.reset();
-                                claimRewardMutation.mutate();
-                              }}
-                              disabled={!canClaimReward || claimRewardMutation.isPending}
-                            >
-                              {claimRewardMutation.isPending ? "Claiming..." : "Claim Reward"}
-                            </Button>
+                        <details>
+                          <summary className="section-kicker cursor-pointer list-none select-none flex items-center justify-between">
+                            Trade History <span className="text-[var(--muted)] opacity-50">Expand ▼</span>
+                          </summary>
+                          <div className="mt-4">
+                            <TradeHistoryPanel history={tradeHistory} currentPrice={currentPriceValue} />
                           </div>
-                        ) : null}
+                        </details>
                       </div>
-
+                    </div>
+                    
+                    <div className="space-y-4">
+                      <OrderPanel
+                        tournamentName={tradeViewTournament.name}
+                        timeLeft={describeCountdown(tradeViewTournament.start_time, tradeViewTournament.end_time, now)}
+                        prizePool={formatPlanck(tradeViewTournament.prize_pool)}
+                        direction={tradeDirection}
+                        onDirectionChange={setTradeDirection}
+                        size={tradeSize}
+                        onSizeChange={setTradeSize}
+                        availableBalance={participant ? toBigIntValue(participant.final_value).toLocaleString() : "Join to unlock"}
+                        entryPrice={tournamentPriceLabel}
+                        currentPrice={livePriceLabel === "BTC --" ? "$0.00" : livePriceLabel}
+                        estimatedPnl={{
+                          value: formatSignedUsd(estimatedTradeMetrics.pnl),
+                          tone:
+                            estimatedTradeMetrics.pnl > 0
+                              ? "positive"
+                              : estimatedTradeMetrics.pnl < 0
+                                ? "negative"
+                                : "default",
+                        }}
+                        actionLabel={tradeDirection === "Long" ? "Open Long" : "Open Short"}
+                        actionVariant={tradeDirection === "Long" ? "positive" : "danger"}
+                        onAction={handleOpenPosition}
+                        actionDisabled={Boolean(tradeDisabledReason) || openPositionMutation.isPending || Boolean(participant?.position?.is_open)}
+                        secondaryActionLabel={
+                          participant?.position?.is_open ? "Close Position" : undefined
+                        }
+                        onSecondaryAction={
+                          participant?.position?.is_open ? handleClosePosition : undefined
+                        }
+                        secondaryDisabled={closePositionMutation.isPending}
+                        activePositionSummary={
+                          participant?.position?.is_open
+                            ? {
+                                direction: participant.position.direction,
+                                size: `${toBigIntValue(participant.position.size).toLocaleString()} USDT`,
+                                entryPrice: formatChainUsdPrice(participant.position.entry_price),
+                              }
+                            : null
+                        }
+                        stopLossPrice={stopLossPrice}
+                        onStopLossChange={setStopLossPrice}
+                        takeProfitPrice={takeProfitPrice}
+                        onTakeProfitChange={setTakeProfitPrice}
+                        riskControlsHelper="Stop Loss and Take Profit are enforced by the tournament keeper."
+                        helper={tournamentPriceHelperText}
+                        warning={tradeFormError ?? tradeDisabledReason ?? undefined}
+                      />
+                      
                       <div className="rounded-[12px] border border-[var(--border-soft)] bg-[var(--panel)] p-4">
-                        <p className="section-kicker">Open Position</p>
+                        <p className="section-kicker">Current Position</p>
                         <div className="mt-4">
                           <PositionCard
                             hasPosition={Boolean(participant?.position?.is_open)}
@@ -1676,72 +1963,60 @@ export function App() {
                             size={participant?.position ? toBigIntValue(participant.position.size).toLocaleString() : null}
                             entryPrice={
                               participant?.position
-                                ? `$${toBigIntValue(participant.position.entry_price).toLocaleString()}`
+                                ? formatChainUsdPrice(participant.position.entry_price)
                                 : null
                             }
-                            currentPrice={`$${currentPriceValue.toLocaleString()}`}
-                            unrealizedPnl={
+                            livePrice={livePriceLabel === "BTC --" ? "$0.00" : livePriceLabel}
+                            tournamentPrice={tournamentPriceLabel}
+                            livePreviewPnl={
+                              participant?.position?.is_open
+                                ? {
+                                    label: formatSignedUsd(livePreviewMetrics.pnl),
+                                    positive: livePreviewMetrics.pnl > 0,
+                                    negative: livePreviewMetrics.pnl < 0,
+                                    key: `live-${Math.round(livePreviewMetrics.pnl * 100)}`,
+                                  }
+                                : null
+                            }
+                            tournamentPnl={
                               participant
                                 ? {
-                                    label: formatSigned(participant.unrealized_pnl),
+                                    label: formatSignedUsd(Number(toBigIntValue(participant.unrealized_pnl))),
                                     positive: toBigIntValue(participant.unrealized_pnl) > 0n,
                                     negative: toBigIntValue(participant.unrealized_pnl) < 0n,
-                                    key: participant.unrealized_pnl,
+                                    key: `tournament-${participant.unrealized_pnl}`,
                                   }
                                 : null
                             }
                             returnPct={
-                              participant
+                              participant?.position?.is_open
                                 ? {
-                                    label: formatPercentBps(participant.return_percentage_bps),
-                                    positive: toBigIntValue(participant.return_percentage_bps) > 0n,
-                                    negative: toBigIntValue(participant.return_percentage_bps) < 0n,
-                                    key: participant.return_percentage_bps,
+                                    label: formatSignedPercent(livePreviewMetrics.returnPct),
+                                    positive: livePreviewMetrics.returnPct > 0,
+                                    negative: livePreviewMetrics.returnPct < 0,
+                                    key: `return-${Math.round(livePreviewMetrics.returnPct * 100)}`,
+                                  }
+                                : null
+                            }
+                            riskControls={
+                              participant?.position
+                                ? {
+                                    stopLossPrice:
+                                      participant.position.stop_loss_price != null
+                                        ? formatChainUsdPrice(participant.position.stop_loss_price)
+                                        : null,
+                                    takeProfitPrice:
+                                      participant.position.take_profit_price != null
+                                        ? formatChainUsdPrice(participant.position.take_profit_price)
+                                        : null,
                                   }
                                 : null
                             }
                             onClose={() => {
-                              closePositionMutation.reset();
-                              closePositionMutation.mutate();
+                              handleClosePosition();
                             }}
                             closePending={closePositionMutation.isPending}
                           />
-                        </div>
-                      </div>
-
-                      <div className="rounded-[12px] border border-[var(--border-soft)] bg-[var(--panel)] p-4">
-                        <p className="section-kicker">Leaderboard</p>
-                        <div className="mt-4">
-                          {leaderboardQuery.isLoading ? <LeaderboardSkeleton count={5} /> : null}
-                          {leaderboardQuery.error ? (
-                            <Notice tone="error">{extractErrorMessage(leaderboardQuery.error)}</Notice>
-                          ) : null}
-                          {!leaderboardQuery.isLoading && !leaderboardEntries.length ? (
-                            <EmptyState
-                              title="Leaderboard waiting for traders"
-                              copy="Ranks appear as soon as participants join the tournament and open positions."
-                            />
-                          ) : null}
-                          {leaderboardEntries.length ? (
-                            <LeaderboardPanel podium={leaderboardPodium} rows={leaderboardRows} />
-                          ) : null}
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
-                      <div className="rounded-[12px] border border-[var(--border-soft)] bg-[var(--panel)] p-4">
-                        <p className="section-kicker">Trade History</p>
-                        <div className="mt-4">
-                          <TradeHistoryPanel history={tradeHistory} currentPrice={currentPriceValue} />
-                        </div>
-                      </div>
-
-                      <div className="rounded-[12px] border border-[var(--border-soft)] bg-[var(--panel)] p-4">
-                        <p className="section-kicker">Rules</p>
-                        <div className="mt-4 space-y-4">
-                          <FairTradingRulesCard />
-                          <InfoPanel title="Prize Split" value="60% / 30% / 10%" />
                         </div>
                       </div>
                     </div>
@@ -1758,16 +2033,19 @@ export function App() {
                   <div className="flex flex-wrap items-start justify-between gap-4">
                     <div>
                       <p className="section-kicker">Leaderboard</p>
-                      <h2 className="mt-2 text-2xl font-semibold text-[var(--text)]">Qualified Traders Only</h2>
+                      <h2 className="mt-2 text-2xl font-semibold text-[var(--text)]">Leaderboard</h2>
+                      <p className="mt-2 text-sm font-medium text-[var(--text)]">
+                        {selectedTournament?.name ?? "Select a tournament"}
+                      </p>
                       <p className="mt-2 text-sm text-[var(--muted)]">
-                        Ranked by Return %. At least one valid trade is required to appear in reward positions.
+                        {leaderboardHeaderCopy}
                       </p>
                     </div>
                     <div className="flex flex-wrap gap-2">
                       <UiStatusPill kind={selectedTournamentStatusKind} label={selectedTournamentStatusLabel} />
                       <UiStatusPill
-                        kind={selectedTournamentState === "Live" ? "live" : selectedTournamentState === "Settling" ? "settling" : "idle"}
-                        label={selectedTournament ? describeCountdown(selectedTournament.start_time, selectedTournament.end_time, now) : "No arena"}
+                        kind={selectedTournamentState === "Live" ? "live" : selectedTournamentState === "Ended" ? "ended" : "idle"}
+                        label={leaderboardCountdownLabel}
                       />
                     </div>
                   </div>
@@ -1776,72 +2054,77 @@ export function App() {
                       tournaments={tournaments}
                       selectedTournamentId={selectedTournamentId}
                       onSelect={setSelectedTournamentId}
+                      now={now}
                     />
                   </div>
                 </ArenaCard>
 
                 {selectedTournament ? (
                   <>
-                    <div className="grid gap-4 xl:grid-cols-4">
+                    <motion.div variants={stagger} className="grid gap-4 xl:grid-cols-3">
                       <LiveRankCard
-                        label="Current Rank"
+                        label="Your Rank"
                         value={participantLeaderboardEntry?.rank ?? 0}
-                        caption={participantLeaderboardEntry ? "Among qualified traders" : "Unranked"}
+                        caption={leaderboardRankCaption}
                         kind="rank"
                       />
                       <LiveRankCard
-                        label="PnL %"
+                        label="Your Return %"
                         value={participant ? Number(participant.return_percentage_bps) / 100 : 0}
-                        caption="Live tournament score"
+                        caption={leaderboardReturnCaption}
                         tone={participant && toBigIntValue(participant.return_percentage_bps) > 0n ? "positive" : participant && toBigIntValue(participant.return_percentage_bps) < 0n ? "negative" : "default"}
                         kind="pnl"
                       />
-                      <LiveRankCard
-                        label="Trade Count"
-                        value={currentUserTradeCount}
-                        caption="Valid trades placed"
-                        kind="trades"
-                      />
-                      <ArenaCard className="min-h-[160px]" glow={participantQualified}>
+                      <ArenaCard
+                        className="min-h-[160px]"
+                        glow={leaderboardQualificationView.qualified}
+                        highlight={!leaderboardQualificationView.qualified}
+                      >
                         <div className="flex items-start justify-between gap-3">
                           <div>
-                            <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--subtle)]">Qualification</p>
+                            <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--subtle)]">Qualification Status</p>
                             <p className="mt-3 text-lg font-semibold text-[var(--text)]">
-                              {participantQualified ? "Qualified" : "Not Qualified"}
+                              {leaderboardQualificationView.title}
                             </p>
                             <p className="mt-2 text-sm text-[var(--muted)]">
-                              {participantQualified ? "Eligible for reward ranking." : "Place at least one trade to qualify."}
+                              {leaderboardQualificationView.body}
                             </p>
                           </div>
-                          <QualificationBadge qualified={participantQualified} />
+                          <QualificationBadge
+                            qualified={leaderboardQualificationView.qualified}
+                            label={leaderboardQualificationView.badgeLabel}
+                          />
                         </div>
                       </ArenaCard>
-                    </div>
+                    </motion.div>
 
                     {leaderboardQuery.isLoading ? <LeaderboardSkeleton count={5} /> : null}
                     {leaderboardQuery.error ? (
                       <Notice tone="error">{extractErrorMessage(leaderboardQuery.error)}</Notice>
                     ) : null}
 
-                    {!leaderboardUiEntries.length && !leaderboardQuery.isLoading ? (
+                    {showLeaderboardEmptyState ? (
                       <EmptyStatePanel
                         eyebrow="Leaderboard"
-                        title="No qualified traders yet"
-                        copy="No trader has placed a qualifying trade yet. Join the arena and place your first paper trade."
-                        action={<Button variant="primary" onClick={() => openTournament(selectedTournament.tournament_id)}>Place your first trade</Button>}
+                        title={leaderboardEmptyState.title}
+                        copy={leaderboardEmptyState.copy}
+                        action={
+                          <Button variant="primary" onClick={() => openTournament(selectedTournament.tournament_id)}>
+                            {leaderboardEmptyState.actionLabel}
+                          </Button>
+                        }
                       />
                     ) : null}
 
-                    {leaderboardUiEntries.length ? (
+                    {leaderboardUiEntries.length && !leaderboardIsUpcoming ? (
                       <ArenaCard className="p-5">
                         <GlowTable
                           header={
-                            <div className="grid gap-3 md:grid-cols-[72px_1.4fr_0.9fr_0.9fr_0.8fr_0.9fr]">
+                            <div className="grid gap-3 md:grid-cols-[72px_1.4fr_0.9fr_0.9fr_0.9fr]">
                               <span>Rank</span>
                               <span>Trader</span>
                               <span>PnL %</span>
                               <span>Trades</span>
-                              <span>Vault</span>
                               <span>Reward</span>
                             </div>
                           }
@@ -1850,11 +2133,11 @@ export function App() {
                             highlight: Boolean(entry.isCurrentUser),
                             podium: entry.rank <= 3 ? (entry.rank as 1 | 2 | 3) : undefined,
                             content: (
-                              <div className="grid gap-4 md:grid-cols-[72px_1.4fr_0.9fr_0.9fr_0.8fr_0.9fr] md:items-center">
+                              <div className="grid gap-4 md:grid-cols-[72px_1.4fr_0.9fr_0.9fr_0.9fr] md:items-center">
                                 <div className="flex items-center gap-2">
                                   <span className="font-mono text-sm font-semibold text-[var(--text)]">#{entry.rank}</span>
                                   {entry.isCurrentUser ? (
-                                    <span className="rounded-full bg-[rgba(28,203,120,0.14)] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--primary-strong)]">
+                                    <span className="rounded-full bg-[rgba(34,211,238,0.12)] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--primary)]">
                                       You
                                     </span>
                                   ) : null}
@@ -1863,15 +2146,14 @@ export function App() {
                                   <p className="text-sm font-semibold text-[var(--text)]">{shortAddress(entry.address)}</p>
                                   <p className="mt-1 text-xs text-[var(--muted)]">{entry.agentName ?? "Arena trader"}</p>
                                 </div>
-                                <p className={`font-mono text-sm font-semibold tabular-nums ${entry.pnlPercent >= 0 ? "text-[var(--primary-strong)]" : "text-[var(--short)]"}`}>
+                                <p className={`font-mono text-sm font-semibold tabular-nums ${entry.pnlPercent >= 0 ? "text-[var(--long)]" : "text-[var(--short)]"}`}>
                                   {entry.pnlPercent >= 0 ? "+" : ""}{entry.pnlPercent.toFixed(2)}%
                                 </p>
                                 <p className="font-mono text-sm text-[var(--text)] tabular-nums">{entry.tradeCount}</p>
-                                <p className="font-mono text-sm text-[var(--text)] tabular-nums">{entry.virtualBalance.toLocaleString()}</p>
                                 <div className="flex flex-wrap items-center gap-2">
                                   <QualificationBadge qualified={entry.isQualified} />
                                   {entry.rewardEstimate ? (
-                                    <span className="rounded-full bg-[rgba(28,203,120,0.12)] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--primary-strong)]">
+                                    <span className="rounded-full bg-[rgba(34,211,238,0.12)] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--primary)]">
                                       {entry.rewardEstimate}% pool
                                     </span>
                                   ) : null}
@@ -1883,7 +2165,7 @@ export function App() {
                       </ArenaCard>
                     ) : null}
 
-                    {notQualifiedUiEntries.length ? (
+                    {showNotQualifiedSection ? (
                       <ArenaCard className="p-5">
                         <div className="flex items-center justify-between gap-3">
                           <div>
@@ -1897,7 +2179,7 @@ export function App() {
                           {notQualifiedUiEntries.map((entry) => (
                             <div
                               key={`inactive-${entry.address}`}
-                              className="rounded-2xl border border-[var(--border-soft)] bg-[rgba(8,20,15,0.72)] px-4 py-4"
+                              className="rounded-[8px] border border-[var(--border-soft)] bg-[var(--sidebar)] px-4 py-4"
                             >
                               <div className="flex flex-wrap items-center justify-between gap-3">
                                 <div>
@@ -1978,8 +2260,7 @@ export function App() {
                           <Button
                             variant="primary"
                             onClick={() => {
-                              claimRewardMutation.reset();
-                              claimRewardMutation.mutate();
+                              handleClaimReward();
                             }}
                             disabled={!canClaimReward || claimRewardMutation.isPending}
                           >
@@ -2056,39 +2337,15 @@ export function App() {
                     />
                     {selectedTournament ? (
                       <div className="mt-5 space-y-4">
-                        <div className="grid gap-4 xl:grid-cols-[1.2fr_0.8fr]">
-                          <ArenaCard className="p-5" glow>
-                            <div className="flex items-center justify-between gap-3">
-                              <div>
-                                <p className="section-kicker">Wallet Summary</p>
-                                <p className="mt-2 text-lg font-semibold text-[var(--text)]">{shortAddress(vaultSummaryView.walletAddress)}</p>
-                              </div>
-                              <Button variant="secondary" onClick={() => openTournament(selectedTournament.tournament_id)}>
-                                Open Arena
-                              </Button>
-                            </div>
-                            <div className="mt-5 grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-                              <div className="rounded-2xl border border-[var(--border-soft)] bg-[rgba(8,20,15,0.72)] p-4">
-                                <AnimatedStat label="VARA Balance" value={Number(balance ?? 0)} suffix=" VARA" decimals={2} />
-                              </div>
-                              <div className="rounded-2xl border border-[var(--border-soft)] bg-[rgba(8,20,15,0.72)] p-4">
-                                <AnimatedStat label="Claimable Rewards" value={vaultSummaryView.totalClaimableRewards} suffix=" VARA" decimals={2} tone="positive" />
-                              </div>
-                              <div className="rounded-2xl border border-[var(--border-soft)] bg-[rgba(8,20,15,0.72)] p-4">
-                                <AnimatedStat label="Claimed Rewards" value={vaultSummaryView.totalClaimedRewards} suffix=" VARA" decimals={2} />
-                              </div>
-                              <div className="rounded-2xl border border-[var(--border-soft)] bg-[rgba(8,20,15,0.72)] p-4">
-                                <AnimatedStat label="Active Positions" value={vaultSummaryView.activePositions} />
-                              </div>
-                              <div className="rounded-2xl border border-[var(--border-soft)] bg-[rgba(8,20,15,0.72)] p-4">
-                                <AnimatedStat label="Completed Arenas" value={vaultSummaryView.completedTournaments} />
-                              </div>
-                              <div className="rounded-2xl border border-[var(--border-soft)] bg-[rgba(8,20,15,0.72)] p-4">
-                                <AnimatedStat label="Current Rank" value={participantLeaderboardEntry?.rank ?? 0} caption={participantLeaderboardEntry ? "Qualified board" : "Not ranked"} />
-                              </div>
-                            </div>
-                          </ArenaCard>
+                        {participantQuery.isLoading ? <Notice tone="info">Loading your vault...</Notice> : null}
+                        {participantNotFound ? (
+                          <Notice tone="warning">You have not joined this tournament yet.</Notice>
+                        ) : null}
+                        {participantQuery.error && !participantNotFound ? (
+                          <Notice tone="error">{extractErrorMessage(participantQuery.error)}</Notice>
+                        ) : null}
 
+                        <div className="grid gap-4 xl:grid-cols-3">
                           <RewardCard
                             title={claimableRewardsView[0]?.tournamentName ?? selectedTournament.name}
                             amount={rewardAmountLabel}
@@ -2109,8 +2366,7 @@ export function App() {
                                 <Button
                                   variant="primary"
                                   onClick={() => {
-                                    claimRewardMutation.reset();
-                                    claimRewardMutation.mutate();
+                                    handleClaimReward();
                                   }}
                                   disabled={!canClaimReward || claimRewardMutation.isPending}
                                 >
@@ -2119,32 +2375,22 @@ export function App() {
                               ) : undefined
                             }
                           />
-                        </div>
-                        {participantQuery.isLoading ? <Notice tone="info">Loading your vault...</Notice> : null}
-                        {participantNotFound ? (
-                          <Notice tone="warning">You have not joined this tournament yet.</Notice>
-                        ) : null}
-                        {participantQuery.error && !participantNotFound ? (
-                          <Notice tone="error">{extractErrorMessage(participantQuery.error)}</Notice>
-                        ) : null}
-                        <div className="grid gap-4 xl:grid-cols-2">
-                          <ArenaCard className="p-5">
+
+                          <ArenaCard className="p-5 xl:col-span-2">
                             <div className="flex items-center justify-between gap-3">
                               <div>
-                                <p className="section-kicker">Active Positions</p>
-                                <p className="mt-2 text-sm text-[var(--muted)]">Open paper trades and their live tournament performance.</p>
+                                <p className="section-kicker">Active Position</p>
                               </div>
-                              <UiStatusPill kind={vaultPositionsView.length ? "live" : "idle"} label={vaultPositionsView.length ? "Live position" : "No positions"} />
                             </div>
-                            <div className="mt-4 space-y-4">
+                            <div className="mt-4">
                               {vaultPositionsView.length ? (
                                 vaultPositionsView.map((position) => (
                                   <VaultPositionCard
                                     key={position.id}
                                     title={position.tournamentName}
                                     side={position.side}
-                                    entryPrice={`$${position.entryPrice.toLocaleString()}`}
-                                    currentPrice={`$${position.currentPrice.toLocaleString()}`}
+                                    entryPrice={formatUsdPrice(position.entryPrice)}
+                                    currentPrice={formatUsdPrice(position.currentPrice)}
                                     pnlPercent={`${position.pnlPercent >= 0 ? "+" : ""}${position.pnlPercent.toFixed(2)}%`}
                                     endsAt={position.endsAt}
                                     status={position.status}
@@ -2153,8 +2399,7 @@ export function App() {
                                         <Button
                                           variant="secondary"
                                           onClick={() => {
-                                            closePositionMutation.reset();
-                                            closePositionMutation.mutate();
+                                            handleClosePosition();
                                           }}
                                           disabled={closePositionMutation.isPending}
                                         >
@@ -2165,116 +2410,42 @@ export function App() {
                                   />
                                 ))
                               ) : (
-                                <EmptyStatePanel
-                                  eyebrow="Positions"
-                                  title="No active positions"
-                                  copy="Open a long or short position in an active arena to start tracking live PnL here."
-                                  action={<Button variant="secondary" onClick={() => openTournament(selectedTournament.tournament_id)}>Open Trade Terminal</Button>}
-                                />
+                                <p className="text-sm text-[var(--muted)]">No active position.</p>
                               )}
                             </div>
                           </ArenaCard>
+                        </div>
 
-                          <ArenaCard className="p-5">
-                            <div className="flex items-center justify-between gap-3">
-                              <div>
-                                <p className="section-kicker">Tournament History</p>
-                                <p className="mt-2 text-sm text-[var(--muted)]">Final outcomes, ranks, and rewards from completed arenas.</p>
-                              </div>
-                            </div>
-                            <div className="mt-4 space-y-3">
+                        <ArenaCard className="p-5">
+                          <p className="section-kicker">History</p>
+                          <div className="mt-4 space-y-4">
+                            <div>
+                              <p className="text-sm font-semibold text-[var(--text)] mb-2">Tournament Result</p>
                               {tournamentHistoryView.length ? (
                                 tournamentHistoryView.map((item) => (
-                                  <div key={item.id} className="rounded-2xl border border-[var(--border-soft)] bg-[rgba(8,20,15,0.72)] px-4 py-4">
-                                    <div className="flex flex-wrap items-center justify-between gap-3">
-                                      <div>
-                                        <p className="text-sm font-semibold text-[var(--text)]">{item.tournamentName}</p>
-                                        <p className="mt-1 text-xs text-[var(--muted)]">
-                                          {item.finalRank ? `Final rank #${item.finalRank}` : "No final rank"} · {item.pnlPercent !== null ? `${item.pnlPercent >= 0 ? "+" : ""}${item.pnlPercent.toFixed(2)}%` : "No PnL"}
-                                        </p>
-                                      </div>
-                                      <div className="text-right">
-                                        <p className="font-mono text-sm font-semibold text-[var(--text)]">{item.rewardEarned.toFixed(2)} VARA</p>
-                                        <p className="mt-1 text-xs text-[var(--muted)]">{item.status.replace(/_/g, " ")}</p>
-                                      </div>
-                                    </div>
+                                  <div key={item.id} className="text-sm text-[var(--muted)]">
+                                    Final rank #{item.finalRank ?? "—"} · {item.pnlPercent !== null ? `${item.pnlPercent >= 0 ? "+" : ""}${item.pnlPercent.toFixed(2)}%` : "No PnL"} · {item.rewardEarned.toFixed(2)} VARA
                                   </div>
                                 ))
                               ) : (
-                                <EmptyStatePanel
-                                  eyebrow="History"
-                                  title="Join your first arena to build your vault"
-                                  copy="Completed arena results, rewards, and final ranks appear here after you trade and settle an arena."
-                                />
+                                <p className="text-sm text-[var(--muted)]">No completed arena results.</p>
                               )}
                             </div>
-                          </ArenaCard>
-                        </div>
-
-                        <div className="grid gap-4 xl:grid-cols-[1.1fr_0.9fr]">
-                          <ArenaCard className="p-5">
-                            <p className="section-kicker">Transaction History</p>
-                            <div className="mt-4">
-                              {txHistoryView.length ? (
-                                <GlowTable
-                                  header={
-                                    <div className="grid gap-3 md:grid-cols-[0.8fr_1.2fr_1fr_1fr]">
-                                      <span>Type</span>
-                                      <span>Hash</span>
-                                      <span>Status</span>
-                                      <span>Created</span>
-                                    </div>
-                                  }
-                                  rows={txHistoryView.map((item) => ({
-                                    key: item.id,
-                                    content: (
-                                      <div className="grid gap-3 md:grid-cols-[0.8fr_1.2fr_1fr_1fr] md:items-center">
-                                        <span className="text-sm font-semibold capitalize text-[var(--text)]">{item.type}</span>
-                                        <span className="font-mono text-sm text-[var(--muted)]">{item.hash}</span>
-                                        <span className="text-sm text-[var(--text)]">{item.status}</span>
-                                        <span className="text-sm text-[var(--muted)]">{item.createdAt}</span>
-                                      </div>
-                                    ),
-                                  }))}
-                                />
-                              ) : (
-                                <EmptyStatePanel
-                                  eyebrow="Transactions"
-                                  title="No transaction history yet"
-                                  copy="Join, trade, settlement, and claim transactions will appear here once the app starts tracking them. TODO: wire explorer hashes when available from chain responses."
-                                />
-                              )}
+                            <div>
+                              <p className="text-sm font-semibold text-[var(--text)] mb-2">Trades</p>
+                              <div className="text-sm text-[var(--muted)]">
+                                <TradeHistoryPanel history={tradeHistory} currentPrice={currentPriceValue} />
+                              </div>
                             </div>
-                          </ArenaCard>
+                          </div>
+                        </ArenaCard>
 
-                          <ArenaCard className="p-5">
-                            <p className="section-kicker">Trade History</p>
-                            <div className="mt-4">
-                              <TradeHistoryPanel history={tradeHistory} currentPrice={currentPriceValue} />
-                            </div>
-                          </ArenaCard>
-                        </div>
                         {renderMutationNotice(claimRewardMutation, {
                           pending: "Claiming reward...",
                           success: claimRewardMutation.data
                             ? `Reward claimed: ${formatPlanck(claimRewardMutation.data)}`
                             : "Reward claimed.",
                         })}
-                        <div className="flex flex-wrap gap-2">
-                          <Button variant="primary" onClick={() => openTournament(selectedTournament.tournament_id)}>
-                            Trade This Tournament
-                          </Button>
-                          <Button
-                            variant="secondary"
-                            onClick={() => {
-                              claimRewardMutation.reset();
-                              claimRewardMutation.mutate();
-                            }}
-                            disabled={!canClaimReward || claimRewardMutation.isPending}
-                          >
-                            {claimRewardMutation.isPending ? "Claiming..." : "Claim Reward"}
-                          </Button>
-                        </div>
                       </div>
                     ) : (
                       <EmptyStatePanel
@@ -2302,54 +2473,26 @@ export function App() {
                       <div>
                         <p className="section-kicker">Admin</p>
                         <p className="mt-2 text-sm text-[var(--muted)]">
-                          Create tournaments and manage active tournament state.
+                          Create tournaments and run keeper-driven price, SL/TP, and lifecycle processing.
                         </p>
                       </div>
                       <UiStatusPill kind="admin" label="Admin" />
                     </div>
                   </div>
 
-                  <AdminOverviewPanel metrics={adminOverviewMetrics} />
+                  <div className="grid gap-6 xl:grid-cols-2">
+                    <ArenaCard className="p-5 xl:col-span-2">
+                      <p className="section-kicker mb-4">Global Stats</p>
+                      <AdminOverviewPanel metrics={adminOverviewMetrics} />
+                    </ArenaCard>
 
-                  <div className="grid gap-4 xl:grid-cols-3">
-                    <div className="product-card p-4">
-                      <div className="flex items-center justify-between gap-3">
-                        <div>
-                          <p className="section-kicker">Live Control</p>
-                          <p className="mt-2 text-sm text-[var(--muted)]">Price feed health, active arena status, and manual intervention warnings.</p>
-                        </div>
-                        <AdminAuditBadge label={syncStatusLabel} />
-                      </div>
-                    </div>
-                    <div className="product-card p-4">
-                      <div className="flex items-center justify-between gap-3">
-                        <div>
-                          <p className="section-kicker">Settlements</p>
-                          <p className="mt-2 text-sm text-[var(--muted)]">Ending soon and pending settlement arenas are surfaced here first.</p>
-                        </div>
-                        <AdminAuditBadge label={`${adminOverviewMetrics[2]?.value ?? "0"} pending`} />
-                      </div>
-                    </div>
-                    <div className="product-card p-4">
-                      <div className="flex items-center justify-between gap-3">
-                        <div>
-                          <p className="section-kicker">Claims</p>
-                          <p className="mt-2 text-sm text-[var(--muted)]">Track when settled tournaments move into claim-open state for users.</p>
-                        </div>
-                        <AdminAuditBadge label={`${adminOverviewMetrics[3]?.value ?? "0"} claim open`} />
-                      </div>
-                    </div>
-                  </div>
-
-                  <AdminConsole
-                    createForm={
+                    <ArenaCard className="p-5">
                       <form onSubmit={handleCreateTournament} className="space-y-4">
                         <div className="flex items-start justify-between gap-3">
                           <div>
-                            <p className="section-kicker">Create Tournament</p>
-                            <h3 className="mt-1 text-lg font-semibold text-slate-50">New event configuration</h3>
+                            <p className="section-kicker">Quick Create Arena</p>
                           </div>
-                          <RocketLaunch size={22} className="text-slate-500" />
+                          <RocketLaunch size={22} className="text-[var(--primary)]" />
                         </div>
                         <div className="grid gap-3 sm:grid-cols-2">
                           <Field label="Tournament name" className="sm:col-span-2">
@@ -2402,7 +2545,7 @@ export function App() {
                               className="input-base"
                             />
                           </Field>
-                          <Field label="Max participants">
+                          <Field label="Max participants" className="sm:col-span-2">
                             <input
                               value={createForm.maxParticipants}
                               onChange={(event) =>
@@ -2430,142 +2573,111 @@ export function App() {
                           Create Tournament
                         </Button>
                       </form>
-                    }
-                    management={
-                      <div className="space-y-4">
-                        <div>
-                          <p className="section-kicker">Live Price Sync</p>
-                          <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                            <InfoPanel
-                              title="Status"
-                              value={canSyncTournamentPrice ? syncStatusLabel : "Waiting for active tournament"}
-                            />
-                            <InfoPanel
-                              title="Last synced"
-                              value={
-                                lastPriceSyncAt
-                                  ? new Intl.DateTimeFormat(undefined, {
-                                      timeStyle: "short",
-                                      dateStyle: "medium",
-                                    }).format(lastPriceSyncAt)
-                                  : "Not synced yet"
-                              }
-                            />
-                            <InfoPanel
-                              title="Current live BTC price"
-                              value={livePriceValue ? `$${livePriceValue.toLocaleString()}` : "Not loaded"}
-                            />
-                            <InfoPanel
-                              title="Current tournament price"
-                              value={currentPriceValue ? `$${currentPriceValue.toLocaleString()}` : "Not loaded"}
-                            />
-                          </div>
-                          {syncWarning ? <p className="mt-3 text-sm text-amber-300">{syncWarning}</p> : null}
-                          <div className="mt-4 flex flex-wrap gap-2">
-                            <Button
-                              variant="primary"
-                              onClick={handleManualPriceSync}
-                              disabled={
-                                !canSyncTournamentPrice ||
-                                !livePriceValue ||
-                                updatePriceMutation.isPending ||
-                                livePriceValue === currentPriceValue
-                              }
-                            >
-                              {updatePriceMutation.isPending ? "Syncing..." : "Sync Tournament Price"}
-                            </Button>
-                            <Button
-                              variant={adminAutoSyncEnabled ? "positive" : "secondary"}
-                              onClick={() => setAdminAutoSyncEnabled((current) => !current)}
-                              disabled={!canSyncTournamentPrice}
-                            >
-                              {adminAutoSyncEnabled ? "Auto Sync On" : "Auto Sync Off"}
-                            </Button>
-                          </div>
-                          {adminAutoSyncEnabled ? (
-                            <p className="mt-3 text-sm text-amber-300">
-                              This will request wallet approval for each on-chain price update.
-                            </p>
-                          ) : null}
-                        </div>
+                    </ArenaCard>
 
-                        <Notice tone="warning">
-                          Ending or settling a tournament changes real on-chain tournament state.
-                        </Notice>
-
-                        <TournamentSelector
-                          tournaments={tournaments}
-                          selectedTournamentId={selectedTournamentId}
-                          onSelect={setSelectedTournamentId}
+                    <ArenaCard className="p-5">
+                      <p className="section-kicker mb-4">Keeper Controls</p>
+                      <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                        <InfoPanel
+                          title="Status"
+                          value={selectedTournament ? selectedTournamentStatusLabel : "No tournament selected"}
                         />
-                        {selectedTournament ? (
-                          <div className="space-y-4">
-                            <div className="rounded-[12px] border border-[var(--border-soft)] bg-[var(--panel-soft)] p-4">
-                              <div className="flex items-start justify-between gap-3">
-                                <div>
-                                  <p className="section-kicker">Selected Tournament</p>
-                                  <h3 className="mt-2 text-lg font-semibold text-[var(--text)]">{selectedTournament.name}</h3>
-                                </div>
-                                <UiStatusPill
-                                  kind={selectedTournamentStatusKind}
-                                  label={selectedTournamentStatusLabel}
-                                />
-                              </div>
-                              <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                                <InfoPanel title="Entry Fee" value={formatPlanck(selectedTournament.entry_fee)} />
-                                <InfoPanel title="Prize Pool" value={formatPlanck(selectedTournament.prize_pool)} />
-                                <InfoPanel title="Start" value={formatTimestamp(selectedTournament.start_time)} />
-                                <InfoPanel title="End" value={formatTimestamp(selectedTournament.end_time)} />
-                              </div>
-                            </div>
-
-                            {renderMutationNotice(tournamentLifecycleMutation, {
-                              pending: "Finalizing tournament and leaderboard...",
-                              success: "Tournament ended and settled.",
-                            })}
-
-                            {lifecycleActionAvailable ? (
-                              <div className="flex flex-wrap gap-2">
-                                <Button
-                                  variant="primary"
-                                  onClick={() => {
-                                    tournamentLifecycleMutation.reset();
-                                    tournamentLifecycleMutation.mutate();
-                                  }}
-                                  disabled={tournamentLifecycleMutation.isPending}
-                                >
-                                  {tournamentLifecycleMutation.isPending ? "Finalizing..." : lifecycleActionLabel}
-                                </Button>
-                              </div>
-                            ) : (
-                              <Notice tone="info">
-                                {selectedTournamentStatusLabel === "Claim Open"
-                                  ? "Tournament is settled. Winners can claim rewards now."
-                                  : selectedTournamentStatusLabel === "Live"
-                                    ? "Trading is open. Settlement actions unlock after the timer ends."
-                                    : "Settlement action will appear when this tournament is ready."}
-                              </Notice>
-                            )}
-
-                    {leaderboardEntries.length ? (
-                      <LeaderboardPanel
-                        podium={leaderboardPodium}
-                        rows={leaderboardRows}
-                        inactiveRows={leaderboardInactiveRows}
-                      />
-                    ) : (
-                              <EmptyState
-                                title="No leaderboard entries yet"
-                                copy="Participants need to join this tournament before there is anything to settle."
-                              />
-                            )}
-                          </div>
-                        ) : (
-                          <Notice tone="warning">Select a tournament to manage it.</Notice>
-                        )}
+                        <InfoPanel
+                          title="Countdown"
+                          value={selectedTournament ? describeCountdown(selectedTournament.start_time, selectedTournament.end_time, now) : "Select a tournament"}
+                        />
+                        <InfoPanel
+                          title="Current live BTC price"
+                          value={activeLivePrice ? livePriceLabel : "Not loaded"}
+                        />
+                        <InfoPanel
+                          title="Current tournament price"
+                          value={currentPriceValue ? tournamentPriceLabel : "Not loaded"}
+                        />
                       </div>
-                    }
-                  />
+                      <p className="mt-3 text-sm text-[var(--muted)]">
+                        Live price updates automatically. On-chain price is updated by keeper/admin.
+                      </p>
+                      <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                        <InfoPanel
+                          title="Sync action"
+                          value="Manual keeper/admin"
+                        />
+                        <InfoPanel
+                          title="Last sync"
+                          value={
+                            lastPriceSyncAt != null
+                              ? formatRelativeSeconds(lastPriceSyncAt, now)
+                              : "Not synced yet"
+                          }
+                        />
+                      </div>
+                      {syncWarning ? <p className="mt-3 text-sm text-amber-300">{syncWarning}</p> : null}
+                      {isAdmin ? (
+                        <div className="mt-4 flex flex-wrap gap-2">
+                          <Button
+                            variant="primary"
+                            onClick={handleManualPriceSync}
+                            disabled={
+                              !selectedTournament ||
+                              livePriceValue <= 0n ||
+                              updatePriceMutation.isPending
+                            }
+                          >
+                            {updatePriceMutation.isPending ? "Syncing..." : "Sync Price & Process"}
+                          </Button>
+                        </div>
+                      ) : (
+                        <p className="mt-3 text-sm text-[var(--muted)]">
+                          Contract price changes only when the keeper/admin syncs Binance price on-chain.
+                        </p>
+                      )}
+                    </ArenaCard>
+
+                    <ArenaCard className="p-5 xl:col-span-2">
+                      <div className="flex items-center justify-between gap-3">
+                        <p className="section-kicker">Tournament Lifecycle</p>
+                        <UiStatusPill kind="admin" label="Admin Control" />
+                      </div>
+                      <div className="mt-4 space-y-3">
+                        {adminLifecycleTournaments.map(({ tournament, lifecycle, statusKind, statusLabel, countdown, needsSettlement }) => {
+                          return (
+                            <motion.div
+                              key={`admin-lifecycle-${tournament.tournament_id}`}
+                              layout
+                              className="rounded-[10px] border border-[var(--border-soft)] bg-[var(--sidebar)] p-4"
+                            >
+                              <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+                                <div>
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <p className="text-sm font-semibold text-[var(--text)]">{tournament.name}</p>
+                                    <UiStatusPill kind={statusKind} label={statusLabel} />
+                                    {needsSettlement ? <SectionBadge tone="warning">Awaiting keeper</SectionBadge> : null}
+                                  </div>
+                                  <div className="mt-2 flex flex-wrap gap-4 text-xs text-[var(--muted)]">
+                                    <span>Status: {statusLabel}</span>
+                                    <span>{countdown}</span>
+                                    <span>Prize pool {formatPlanck(tournament.prize_pool)}</span>
+                                  </div>
+                                </div>
+                                <div className="flex flex-wrap gap-2">
+                                  <Button
+                                    variant="secondary"
+                                    onClick={() => {
+                                      setSelectedTournamentId(tournament.tournament_id);
+                                      setRoute({ page: "trade", tournamentId: tournament.tournament_id });
+                                    }}
+                                  >
+                                    View Tournament
+                                  </Button>
+                                </div>
+                              </div>
+                            </motion.div>
+                          );
+                        })}
+                      </div>
+                    </ArenaCard>
+                  </div>
                 </div>
               )}
             </motion.section>
@@ -2602,7 +2714,7 @@ function WalletPill({
     <motion.div
       initial={{ opacity: 0, x: 8 }}
       animate={{ opacity: 1, x: 0 }}
-      className="flex flex-wrap items-center gap-2 rounded-full border border-[var(--border-hi)] bg-[rgba(12,27,20,0.92)] px-3 py-2 shadow-[0_12px_32px_rgba(0,0,0,0.24)]"
+      className="flex flex-wrap items-center gap-2 rounded-[8px] border border-[rgba(255,255,255,0.08)] bg-[var(--panel)] px-3 py-2"
     >
       <span className="h-2 w-2 rounded-full bg-[var(--primary)]" />
       <div className="text-sm font-medium text-[var(--text)]">{shortAddress(address)}</div>
@@ -2633,11 +2745,13 @@ function TournamentSelector({
   selectedTournamentId,
   onSelect,
   onOpen,
+  now = Date.now(),
 }: {
   tournaments: TournamentView[];
   selectedTournamentId: string;
   onSelect: (tournamentId: string) => void;
   onOpen?: (tournamentId: string) => void;
+  now?: number;
 }) {
   if (!tournaments.length) {
     return <Notice tone="warning">No tournaments available yet.</Notice>;
@@ -2647,22 +2761,33 @@ function TournamentSelector({
     <div className="flex flex-wrap gap-2">
       {tournaments.map((tournament) => {
         const active = selectedTournamentId === tournament.tournament_id;
+        const lifecycle = getTournamentLifecycleState(tournament, now);
+        const dotClass =
+          lifecycle === "Live"
+            ? "bg-[var(--long)]"
+            : lifecycle === "Upcoming"
+              ? "bg-amber-400"
+              : lifecycle === "Claim Open"
+                ? "bg-[var(--primary)]"
+                : "bg-[var(--muted)]";
         return (
-          <button
+          <motion.button
             key={tournament.tournament_id}
             type="button"
+            whileTap={{ scale: 0.98 }}
             onClick={() => {
               onSelect(tournament.tournament_id);
               onOpen?.(tournament.tournament_id);
             }}
             className={
               active
-                ? "rounded-full bg-[var(--primary)] px-4 py-2 text-sm font-semibold text-[#04130c]"
-                : "rounded-full border border-[var(--border-soft)] bg-[var(--panel)] px-4 py-2 text-sm font-semibold text-[var(--muted)] transition hover:border-[var(--border-hi)] hover:text-[var(--text)]"
+                ? "inline-flex items-center gap-2 rounded-[8px] border border-[rgba(34,211,238,0.2)] bg-[rgba(34,211,238,0.1)] px-4 py-2 text-sm font-semibold text-[var(--primary)]"
+                : "inline-flex items-center gap-2 rounded-[8px] border border-[rgba(255,255,255,0.1)] bg-[var(--panel)] px-4 py-2 text-sm font-semibold text-[#94A3B8] transition hover:bg-white/[0.04] hover:text-[var(--text)]"
             }
           >
+            <span className={`h-2 w-2 rounded-full ${dotClass}`} />
             {tournament.name}
-          </button>
+          </motion.button>
         );
       })}
     </div>
@@ -2696,6 +2821,56 @@ function Section({
   );
 }
 
+function TournamentSection({
+  title,
+  subtitle,
+  children,
+}: {
+  title: string;
+  subtitle: string;
+  children: ReactNode;
+}) {
+  return (
+    <div className="product-card p-5 sm:p-6">
+      <p className="text-lg font-semibold text-[var(--text)]">{title}</p>
+      <p className="mt-2 text-sm leading-6 text-[var(--muted)]">{subtitle}</p>
+      <div className="mt-5">{children}</div>
+    </div>
+  );
+}
+
+function EmptySection({
+  copy,
+}: {
+  copy: string;
+}) {
+  return (
+    <div className="rounded-[10px] border border-dashed border-[var(--border-soft)] bg-[var(--sidebar)] p-5">
+      <p className="text-sm text-[var(--muted)]">{copy}</p>
+    </div>
+  );
+}
+
+function SectionBadge({
+  children,
+  tone = "default",
+}: {
+  children: string;
+  tone?: "default" | "warning";
+}) {
+  return (
+    <span
+      className={
+        tone === "warning"
+          ? "rounded-full bg-[rgba(244,201,93,0.12)] px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--warning)]"
+          : "rounded-full bg-white/[0.05] px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--muted)]"
+      }
+    >
+      {children}
+    </span>
+  );
+}
+
 
 function InfoStat({
   label,
@@ -2707,11 +2882,11 @@ function InfoStat({
   inverted?: boolean;
 }) {
   return (
-    <div className={`rounded-2xl border px-3 py-3 ${inverted ? "border-[var(--border-soft)] bg-[rgba(17,39,29,0.8)]" : "border-[var(--border-soft)] bg-[rgba(8,20,15,0.8)]"}`}>
-      <p className={`text-xs font-semibold uppercase tracking-[0.18em] ${inverted ? "text-[var(--subtle)]" : "text-[var(--subtle)]"}`}>
+    <div className={`rounded-[8px] border px-3 py-3 ${inverted ? "border-[var(--border-soft)] bg-[var(--panel-soft)]" : "border-[var(--border-soft)] bg-[var(--sidebar)]"}`}>
+      <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--subtle)]">
         {label}
       </p>
-      <p className={`mt-2 text-sm font-semibold ${inverted ? "text-[var(--text)]" : "text-[var(--text)]"}`}>
+      <p className="mt-2 text-[13px] font-semibold text-[var(--text)]">
         {value}
       </p>
     </div>
@@ -2729,23 +2904,23 @@ function InfoPanel({
 }) {
   const toneClass =
     tone === "positive"
-      ? "text-[var(--primary-strong)]"
+      ? "text-[var(--long)]"
       : tone === "negative"
         ? "text-[var(--short)]"
         : "text-[var(--text)]";
   return (
     <motion.div
       layout
-      className="rounded-2xl border border-[var(--border-soft)] bg-[rgba(8,20,15,0.72)] p-3"
+      className="rounded-[8px] border border-[var(--border-soft)] bg-[var(--sidebar)] p-3"
     >
-      <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--subtle)]">
+      <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--subtle)]">
         {title}
       </p>
       <motion.p
         key={`${typeof title === "string" ? title : "panel"}-${value}`}
         initial={{ opacity: 0.75, y: 4 }}
         animate={{ opacity: 1, y: 0 }}
-        className={`mt-2 text-sm font-semibold ${toneClass}`}
+        className={`mt-2 text-[13px] font-semibold ${toneClass}`}
       >
         {value}
       </motion.p>
@@ -2764,8 +2939,8 @@ function TradeHistoryPanel({
     <div className="product-card p-5">
       <div className="flex items-center justify-between gap-3">
         <div>
-          <p className="text-xs font-semibold uppercase tracking-[0.2em] text-[var(--subtle)]">Trade History</p>
-          <h3 className="mt-1 text-xl font-semibold text-[var(--text)]">Your Activity</h3>
+          <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--subtle)]">Trade History</p>
+          <h3 className="mt-1 text-[18px] font-semibold text-[var(--text)]">Your Activity</h3>
         </div>
         <span className="text-xs text-[var(--subtle)]">{history.length} entries</span>
       </div>
@@ -2774,15 +2949,16 @@ function TradeHistoryPanel({
           {[...history].reverse().map((item, index) => (
             <div
               key={`${item.action}-${item.timestamp}-${index}`}
-              className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-[var(--border-soft)] bg-[rgba(8,20,15,0.72)] px-3 py-3"
+              className="flex flex-wrap items-center justify-between gap-3 rounded-[8px] border border-[var(--border-soft)] bg-[var(--sidebar)] px-3 py-3"
             >
               <div>
                 <p className="text-sm font-semibold text-[var(--text)]">
                   {item.action === "OPEN" ? "Opened" : "Closed"} {item.direction}
                 </p>
                 <p className="text-xs text-[var(--muted)]">
-                  Entry ${toBigIntValue(item.entryPrice).toLocaleString()}
-                  {item.exitPrice ? ` · Exit $${toBigIntValue(item.exitPrice).toLocaleString()}` : ` · Current $${currentPrice.toLocaleString()}`}
+                  Entry {formatChainUsdPrice(item.entryPrice)}
+                  {item.exitPrice ? ` · Exit ${formatChainUsdPrice(item.exitPrice)}` : ` · Current ${formatChainUsdPrice(currentPrice)}`}
+                  {item.closeReason ? ` · ${formatCloseReason(item.closeReason)}` : ""}
                 </p>
               </div>
               <div className="text-right">
@@ -2821,7 +2997,7 @@ function FairTradingRulesCard() {
     <div className="space-y-3">
       <div className="grid gap-2">
         {rules.map((rule) => (
-          <div key={rule} className="rounded-2xl border border-[var(--border-soft)] bg-[rgba(8,20,15,0.72)] px-3 py-3 text-sm text-[var(--muted)]">
+          <div key={rule} className="rounded-[8px] border border-[var(--border-soft)] bg-[var(--sidebar)] px-3 py-3 text-sm text-[var(--muted)]">
             {rule}
           </div>
         ))}
@@ -2863,9 +3039,9 @@ function Toast({
   message: string;
 }) {
   const styles = {
-    success: "border-[rgba(28,203,120,0.28)] bg-[rgba(28,203,120,0.14)] text-[var(--text)]",
-    error: "border-[rgba(255,107,107,0.28)] bg-[rgba(255,107,107,0.14)] text-[var(--text)]",
-    info: "border-[rgba(103,247,177,0.24)] bg-[rgba(103,247,177,0.12)] text-[var(--text)]",
+    success: "border-[rgba(34,197,94,0.18)] bg-[rgba(34,197,94,0.12)] text-[var(--text)]",
+    error: "border-[rgba(239,68,68,0.18)] bg-[rgba(239,68,68,0.12)] text-[var(--text)]",
+    info: "border-[rgba(34,211,238,0.18)] bg-[rgba(34,211,238,0.12)] text-[var(--text)]",
   } satisfies Record<typeof tone, string>;
 
   return (
@@ -2874,7 +3050,7 @@ function Toast({
       initial={{ opacity: 0, y: -8, scale: 0.98 }}
       animate={{ opacity: 1, y: 0, scale: 1 }}
       exit={{ opacity: 0, y: -8, scale: 0.98 }}
-      className={`pointer-events-auto rounded-2xl border px-4 py-3 text-sm shadow-[0_16px_36px_rgba(2,6,23,0.35)] backdrop-blur ${styles[tone]}`}
+      className={`pointer-events-auto rounded-[10px] border px-4 py-3 text-sm ${styles[tone]}`}
     >
       {message}
     </motion.div>
@@ -2887,13 +3063,13 @@ function CardSkeletonGrid({ count }: { count: number }) {
       {Array.from({ length: count }).map((_, index) => (
         <div
           key={index}
-          className="animate-pulse rounded-[26px] border border-[var(--border-soft)] bg-[rgba(12,27,20,0.76)] p-5"
+          className="animate-pulse rounded-[12px] border border-[var(--border-soft)] bg-[var(--panel)] p-5"
         >
           <div className="h-3 w-28 rounded-full bg-[rgba(103,247,177,0.08)]" />
           <div className="mt-4 h-7 w-2/3 rounded-full bg-[rgba(103,247,177,0.08)]" />
           <div className="mt-5 grid grid-cols-2 gap-3">
             {Array.from({ length: 4 }).map((__, cell) => (
-              <div key={cell} className="rounded-2xl border border-[var(--border-soft)] bg-[rgba(8,20,15,0.8)] p-3">
+              <div key={cell} className="rounded-[8px] border border-[var(--border-soft)] bg-[var(--sidebar)] p-3">
                 <div className="h-3 w-16 rounded-full bg-[rgba(103,247,177,0.08)]" />
                 <div className="mt-3 h-4 w-20 rounded-full bg-[rgba(103,247,177,0.08)]" />
               </div>
@@ -2915,16 +3091,16 @@ function LeaderboardSkeleton({ count }: { count: number }) {
       {Array.from({ length: count }).map((_, index) => (
         <div
           key={index}
-          className="animate-pulse rounded-[24px] border border-[var(--border-soft)] bg-[rgba(12,27,20,0.76)] p-4"
+          className="animate-pulse rounded-[12px] border border-[var(--border-soft)] bg-[var(--panel)] p-4"
         >
           <div className="grid gap-3 md:grid-cols-[64px_1.3fr_repeat(4,0.9fr)]">
-            <div className="h-12 w-12 rounded-2xl bg-[rgba(103,247,177,0.08)]" />
+            <div className="h-12 w-12 rounded-[8px] bg-white/[0.05]" />
             <div className="space-y-2">
               <div className="h-4 w-32 rounded-full bg-[rgba(103,247,177,0.08)]" />
               <div className="h-3 w-20 rounded-full bg-[rgba(103,247,177,0.08)]" />
             </div>
             {Array.from({ length: 4 }).map((__, cell) => (
-              <div key={cell} className="rounded-2xl border border-[var(--border-soft)] bg-[rgba(8,20,15,0.8)] p-3">
+              <div key={cell} className="rounded-[8px] border border-[var(--border-soft)] bg-[var(--sidebar)] p-3">
                 <div className="h-3 w-16 rounded-full bg-[rgba(103,247,177,0.08)]" />
                 <div className="mt-3 h-4 w-20 rounded-full bg-[rgba(103,247,177,0.08)]" />
               </div>
@@ -2944,7 +3120,7 @@ function EmptyState({
   copy: string;
 }) {
   return (
-    <div className="rounded-[24px] border border-dashed border-[var(--border-soft)] bg-[rgba(8,20,15,0.72)] px-5 py-8 text-center">
+    <div className="rounded-[10px] border border-dashed border-[var(--border-soft)] bg-[var(--sidebar)] px-5 py-8 text-center">
       <p className="text-lg font-semibold text-[var(--text)]">{title}</p>
       <p className="mx-auto mt-2 max-w-xl text-sm leading-6 text-[var(--muted)]">{copy}</p>
     </div>
@@ -2962,7 +3138,7 @@ function Field({
 }) {
   return (
     <label className={`block space-y-2 ${className}`}>
-      <span className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--subtle)]">
+      <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--subtle)]">
         {label}
       </span>
       {children}
@@ -2978,13 +3154,13 @@ function Notice({
   children: ReactNode;
 }) {
   const styles = {
-    info: "border-[rgba(103,247,177,0.24)] bg-[rgba(103,247,177,0.1)] text-[var(--text)]",
-    warning: "border-[rgba(244,201,93,0.28)] bg-[rgba(244,201,93,0.1)] text-[var(--text)]",
-    error: "border-[rgba(255,107,107,0.28)] bg-[rgba(255,107,107,0.1)] text-[var(--text)]",
+    info: "border-[rgba(34,211,238,0.18)] bg-[rgba(34,211,238,0.12)] text-[var(--text)]",
+    warning: "border-[rgba(245,158,11,0.18)] bg-[rgba(245,158,11,0.12)] text-[var(--text)]",
+    error: "border-[rgba(239,68,68,0.18)] bg-[rgba(239,68,68,0.12)] text-[var(--text)]",
   } satisfies Record<typeof tone, string>;
 
   return (
-    <div className={`rounded-2xl border px-4 py-3 text-sm backdrop-blur-md ${styles[tone]}`}>{children}</div>
+    <div className={`rounded-[10px] border px-4 py-3 text-sm ${styles[tone]}`}>{children}</div>
   );
 }
 
@@ -3022,34 +3198,27 @@ function mapStatusLabel(status: string): string {
 function getTournamentLifecycleState(
   tournament: TournamentView,
   now: number,
-): "Upcoming" | "Live" | "Ended" | "Settling" | "Settled" | "Claim Open" {
-  const start = Number(toBigIntValue(tournament.start_time));
-  const end = Number(toBigIntValue(tournament.end_time));
+): "Upcoming" | "Live" | "Ended" | "Settled" | "Claim Open" {
+  const start = normalizeTimestampMs(tournament.start_time);
+  const end = normalizeTimestampMs(tournament.end_time);
 
   if (tournament.status === "Settled") {
     return tournament.winners.length ? "Claim Open" : "Settled";
   }
-  if (tournament.status === "Ended") return "Settling";
-  if (tournament.status === "Upcoming") {
-    return now >= start ? "Live" : "Upcoming";
+  if (now < start) return "Upcoming";
+  if (now >= start && now < end && tournament.status !== "Ended") {
+    return "Live";
   }
-  if (tournament.status === "Active") {
-    return now >= end ? "Settling" : "Live";
-  }
+  if (now >= end) return "Ended";
 
-  return "Ended";
+  return tournament.status === "Active" ? "Live" : "Ended";
 }
 
 function getJoinReason(
   tournament: TournamentView,
   now: number,
-  txAccount: { address: string; signer?: unknown | null } | null,
-  hasProgramId: boolean,
-  walletActionReason: string,
 ): string | null {
-  if (!hasProgramId) return "Paste a deployed program ID first.";
-  if (!txAccount) return walletActionReason;
-  const start = Number(toBigIntValue(tournament.start_time));
+  const start = normalizeTimestampMs(tournament.start_time);
   if (tournament.status !== "Upcoming" || now >= start) {
     return "Joining closes when the tournament starts.";
   }
@@ -3063,9 +3232,12 @@ function getTradingDisabledReason(
   now: number,
 ): string | null {
   if (!participant) return "Join this tournament before trading.";
-  const end = Number(toBigIntValue(tournament.end_time));
-  if (tournament.status !== "Active" || now >= end) return "Tournament not active.";
-  if (participant.position?.is_open) return "Position already open.";
+  const start = normalizeTimestampMs(tournament.start_time);
+  const end = normalizeTimestampMs(tournament.end_time);
+  const displayStatus = getTournamentLifecycleState(tournament, now);
+  if (displayStatus === "Upcoming" || now < start) return "Tournament has not started yet.";
+  if (displayStatus !== "Live" || now >= end) return "Tournament ended. Trading is closed.";
+  if (participant.position?.is_open) return "You already have an open position.";
   return null;
 }
 
@@ -3102,12 +3274,132 @@ function rawErrorMessage(error: unknown): string {
 function mapArenaErrorMessage(message: string): string {
   if (message.includes("TournamentNotActive")) return "Tournament not active.";
   if (message.includes("TournamentNotUpcoming")) return "Tournament already started.";
+  if (message.includes("TournamentRequiresEnd")) return "End the tournament on-chain before settling.";
   if (message.includes("AlreadyJoined")) return "Already joined.";
   if (message.includes("PositionAlreadyOpen")) return "Position already open.";
   if (message.includes("PositionNotOpen")) return "No open position.";
+  if (message.includes("InvalidRiskControls")) return "Stop Loss / Take Profit levels are invalid for this position.";
   if (message.includes("WrongEntryFee")) return "Join requires the exact entry fee.";
   if (message.includes("ParticipantNotFound")) return "Join this tournament before trading.";
   return message;
+}
+
+function calculatePnl({
+  direction,
+  size,
+  entryPrice,
+  currentPrice,
+}: {
+  direction: PositionDirection;
+  size: number;
+  entryPrice: number;
+  currentPrice: number;
+}) {
+  if (!Number.isFinite(size) || !Number.isFinite(entryPrice) || !Number.isFinite(currentPrice)) {
+    return { pnl: 0, returnPct: 0 };
+  }
+  if (size <= 0 || entryPrice <= 0 || currentPrice <= 0) {
+    return { pnl: 0, returnPct: 0 };
+  }
+
+  const priceDiff =
+    direction === "Long" ? currentPrice - entryPrice : entryPrice - currentPrice;
+  const pnl = (priceDiff / entryPrice) * size;
+  const returnPct = size > 0 ? (pnl / size) * 100 : 0;
+
+  return { pnl, returnPct };
+}
+
+function formatSignedUsd(value: number): string {
+  if (!Number.isFinite(value)) return "$0.00";
+  const sign = value > 0 ? "+" : value < 0 ? "-" : "";
+  return `${sign}${formatUsdPrice(Math.abs(value))}`;
+}
+
+function formatSignedPercent(value: number): string {
+  if (!Number.isFinite(value)) return "0.00%";
+  const sign = value > 0 ? "+" : "";
+  return `${sign}${value.toFixed(2)}%`;
+}
+
+function parseTradeSizeNumber(input: string): number {
+  const normalized = input.trim();
+  if (!/^\d+(\.\d+)?$/.test(normalized)) return 0;
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function parseRiskPriceInput(input: string, label: string): number | null {
+  const normalized = input.trim().replace(/,/g, "");
+  if (!normalized) return null;
+  if (!/^\d+(\.\d+)?$/.test(normalized)) {
+    throw new Error(`${label} must be a valid BTC price.`);
+  }
+
+  const value = Number(normalized);
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new Error(`${label} must be greater than zero.`);
+  }
+
+  return value;
+}
+
+function parseRiskControls({
+  direction,
+  entryPrice,
+  stopLossInput,
+  takeProfitInput,
+}: {
+  direction: PositionDirection;
+  entryPrice: number;
+  stopLossInput: string;
+  takeProfitInput: string;
+}): { stopLossPrice: bigint | null; takeProfitPrice: bigint | null } {
+  const stopLossPrice = parseRiskPriceInput(stopLossInput, "Stop Loss");
+  const takeProfitPrice = parseRiskPriceInput(takeProfitInput, "Take Profit");
+  if ((stopLossPrice != null || takeProfitPrice != null) && entryPrice <= 0) {
+    throw new Error("Tournament price is not ready yet.");
+  }
+
+  if (direction === "Long") {
+    if (stopLossPrice != null && stopLossPrice >= entryPrice) {
+      throw new Error("For Long positions, Stop Loss must be below entry price.");
+    }
+    if (takeProfitPrice != null && takeProfitPrice <= entryPrice) {
+      throw new Error("For Long positions, Take Profit must be above entry price.");
+    }
+  } else {
+    if (stopLossPrice != null && stopLossPrice <= entryPrice) {
+      throw new Error("For Short positions, Stop Loss must be above entry price.");
+    }
+    if (takeProfitPrice != null && takeProfitPrice >= entryPrice) {
+      throw new Error("For Short positions, Take Profit must be below entry price.");
+    }
+  }
+
+  return {
+    stopLossPrice: stopLossPrice != null ? toChainPriceValue(stopLossPrice) : null,
+    takeProfitPrice: takeProfitPrice != null ? toChainPriceValue(takeProfitPrice) : null,
+  };
+}
+
+function formatCloseReason(reason: CloseReason): string {
+  if (reason === "StopLoss") return "Stop Loss";
+  if (reason === "TakeProfit") return "Take Profit";
+  return "Manual";
+}
+
+async function runGuardedTransaction<T>(
+  txInFlightRef: { current: boolean },
+  execute: () => Promise<T>,
+): Promise<T | undefined> {
+  if (txInFlightRef.current) return undefined;
+  txInFlightRef.current = true;
+  try {
+    return await execute();
+  } finally {
+    txInFlightRef.current = false;
+  }
 }
 
 function calculateSyntheticPnl(
@@ -3121,24 +3413,6 @@ function calculateSyntheticPnl(
   return (size * diff) / entryPrice;
 }
 
-function mergeLivePriceHistory(
-  history: LivePricePoint[],
-  latestPrice: number | null,
-): LivePricePoint[] {
-  if (!history.length && latestPrice == null) return [];
-  if (latestPrice == null) return history;
-
-  const nextPoint = { price: latestPrice, timestamp: Date.now() };
-  const previous = history[history.length - 1];
-  if (!previous) return [nextPoint];
-
-  if (Math.abs(previous.price - latestPrice) < 0.0001) {
-    return [...history.slice(0, -1), { ...previous, timestamp: nextPoint.timestamp }];
-  }
-
-  return [...history, nextPoint].slice(-72);
-}
-
 function getPriceSyncStatus({
   livePriceValue,
   currentPriceValue,
@@ -3146,31 +3420,44 @@ function getPriceSyncStatus({
   lastPriceSyncAt,
   now,
   tournamentState,
+  latencyMs,
+  engineStatus,
 }: {
   livePriceValue: bigint;
   currentPriceValue: bigint;
   isSyncing: boolean;
   lastPriceSyncAt: number | null;
   now: number;
-  tournamentState: "Upcoming" | "Live" | "Ended" | "Settling" | "Settled" | "Claim Open" | null;
+  tournamentState: "Upcoming" | "Live" | "Ended" | "Settled" | "Claim Open" | null;
+  latencyMs: number | null;
+  engineStatus: "idle" | "syncing" | "live" | "paused" | "error";
 }): string {
-  if (isSyncing) return "Syncing...";
+  if (isSyncing) return "Syncing tournament price...";
+  if (engineStatus === "paused" && (livePriceValue <= 0n || currentPriceValue <= 0n)) {
+    return "Waiting for keeper wallet";
+  }
+  if (engineStatus === "error") return "Engine retrying...";
   if (tournamentState && tournamentState !== "Live") {
-    return lastPriceSyncAt ? `Live price synced · ${formatRelativeSeconds(lastPriceSyncAt, now)}` : "Live price synced";
+    return lastPriceSyncAt
+      ? `Tournament price synced · ${formatRelativeSeconds(lastPriceSyncAt, now)}${latencyMs != null ? ` · ${formatLatency(latencyMs)}` : ""}`
+      : "Tournament price synced";
   }
-  if (livePriceValue <= 0n || currentPriceValue <= 0n) return "Price feed delayed";
+  if (livePriceValue <= 0n || currentPriceValue <= 0n) return "Waiting for next tournament price sync";
   if (livePriceValue === currentPriceValue) {
-    return lastPriceSyncAt ? `Live price synced · ${formatRelativeSeconds(lastPriceSyncAt, now)}` : "Live price synced";
+    return lastPriceSyncAt
+      ? `Tournament price synced · ${formatRelativeSeconds(lastPriceSyncAt, now)}${latencyMs != null ? ` · ${formatLatency(latencyMs)}` : ""}`
+      : "Tournament price synced";
   }
-  if (lastPriceSyncAt && now - lastPriceSyncAt <= 45_000) {
-    return `Last synced ${formatRelativeSeconds(lastPriceSyncAt, now)}`;
-  }
-  return "Price feed delayed";
+  return "Waiting for next tournament price sync";
 }
 
 function formatRelativeSeconds(timestamp: number, now: number): string {
   const seconds = Math.max(0, Math.floor((now - timestamp) / 1000));
   return `${seconds}s ago`;
+}
+
+function formatLatency(latencyMs: number): string {
+  return `Synced ${(latencyMs / 1000).toFixed(1)}s`;
 }
 
 function isParticipantQualified({
@@ -3267,7 +3554,7 @@ function getRewardStatus({
   if (!participantQualified) return "Not qualified";
   if (!tournament) return "No tournament selected";
   if (tournament.status !== "Settled") {
-    return getTournamentLifecycleState(tournament, Date.now()) === "Settling"
+    return getTournamentLifecycleState(tournament, Date.now()) === "Ended"
       ? "Awaiting settlement"
       : "Tournament still live";
   }
@@ -3333,10 +3620,9 @@ function useHashRoute(): [AppRoute, (route: AppRoute) => void] {
 
   const setRoute = (next: AppRoute) => {
     const hash = toHashRoute(next);
+    setRouteState(next);
     if (window.location.hash !== hash) {
       window.location.hash = hash;
-    } else {
-      setRouteState(next);
     }
   };
 
@@ -3344,10 +3630,28 @@ function useHashRoute(): [AppRoute, (route: AppRoute) => void] {
 }
 
 function parseHashRoute(hash: string): AppRoute {
-  const normalized = hash.replace(/^#/, "");
+  const normalized = normalizeHashPath(hash);
+
+  if (normalized === "/" || normalized === "/home") {
+    return { page: "home" };
+  }
+
+  if (normalized === "/trade") {
+    return { page: "trade" };
+  }
+
+  if (normalized.startsWith("/trade/")) {
+    const tournamentId = normalized.slice("/trade/".length).trim();
+    return tournamentId ? { page: "trade", tournamentId } : { page: "trade" };
+  }
+
+  if (normalized.startsWith("/tournament/")) {
+    const tournamentId = normalized.slice("/tournament/".length).trim();
+    return tournamentId ? { page: "trade", tournamentId } : { page: "trade" };
+  }
 
   if (normalized.startsWith("/tournaments/")) {
-    const tournamentId = normalized.replace("/tournaments/", "").trim();
+    const tournamentId = normalized.slice("/tournaments/".length).trim();
     return tournamentId ? { page: "trade", tournamentId } : { page: "tournaments" };
   }
 
@@ -3369,6 +3673,18 @@ function parseHashRoute(hash: string): AppRoute {
   }
 }
 
+function normalizeHashPath(hash: string): string {
+  const raw = hash.replace(/^#/, "").trim();
+  if (!raw) return "/";
+
+  const [path] = raw.split(/[?#]/, 1);
+  const withLeadingSlash = path.startsWith("/") ? path : `/${path}`;
+  const collapsed = withLeadingSlash.replace(/\/{2,}/g, "/");
+
+  if (collapsed === "/") return "/";
+  return collapsed.endsWith("/") ? collapsed.slice(0, -1) : collapsed;
+}
+
 function toHashRoute(route: AppRoute): string {
   switch (route.page) {
     case "tournaments":
@@ -3382,9 +3698,9 @@ function toHashRoute(route: AppRoute): string {
     case "admin":
       return "#/admin";
     case "trade":
-      return route.tournamentId ? `#/tournaments/${route.tournamentId}` : "#/trade";
+      return route.tournamentId ? `#/trade/${route.tournamentId}` : "#/trade";
     case "tournament":
-      return route.tournamentId ? `#/tournaments/${route.tournamentId}` : "#/tournaments";
+      return route.tournamentId ? `#/trade/${route.tournamentId}` : "#/trade";
     default:
       return "#/";
   }

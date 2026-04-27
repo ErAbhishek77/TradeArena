@@ -20,7 +20,7 @@ export function GlowTable({
 
   return (
     <div className="space-y-3">
-      <div className="grid gap-3 rounded-2xl border border-[var(--border-soft)] bg-[rgba(8,20,15,0.72)] px-4 py-3 text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--subtle)]">
+      <div className="grid gap-3 rounded-[8px] border border-[var(--border-soft)] bg-[var(--sidebar)] px-4 py-3 text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--subtle)]">
         {header}
       </div>
       {rows.length ? (
@@ -33,22 +33,10 @@ export function GlowTable({
             whileHover={reduceMotion ? undefined : { y: -3 }}
             transition={{ duration: 0.22, delay: index * 0.03 }}
             className={cn(
-              "relative overflow-hidden rounded-2xl border border-[var(--border-soft)] bg-[var(--panel)] px-4 py-4",
-              row.highlight && "shadow-[0_0_0_1px_rgba(103,247,177,0.24),0_18px_36px_rgba(28,203,120,0.12)]",
+              "relative overflow-hidden rounded-[8px] border border-[var(--border-soft)] bg-[var(--panel)] px-4 py-4",
+              row.highlight && "border-l-[3px] border-l-[var(--primary)] bg-[rgba(34,211,238,0.08)]",
             )}
           >
-            {row.podium ? (
-              <div
-                className={cn(
-                  "pointer-events-none absolute inset-x-0 top-0 h-12 opacity-70",
-                  row.podium === 1
-                    ? "bg-[radial-gradient(circle_at_top,rgba(244,201,93,0.16),transparent_72%)]"
-                    : row.podium === 2
-                      ? "bg-[radial-gradient(circle_at_top,rgba(226,232,240,0.14),transparent_72%)]"
-                      : "bg-[radial-gradient(circle_at_top,rgba(251,146,60,0.14),transparent_72%)]",
-                )}
-              />
-            ) : null}
             <div className="relative">{row.content}</div>
           </motion.div>
         ))

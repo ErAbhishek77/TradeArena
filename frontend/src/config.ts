@@ -1,0 +1,5 @@
+export const PROGRAM_ID =
+  "0x4633e693b251d976e33631c09b9277219e032d62150684ae501d8c7f2c9a5fc7";
+
+export const CHAIN_PRICE_SCALE = 100n;
+export const CHAIN_PRICE_DECIMALS = 2;

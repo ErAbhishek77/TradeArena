@@ -13,11 +13,45 @@ import {
   type WalletAccount,
   type EnabledWallet,
 } from "@/lib/wallet";
+import { PROGRAM_ID } from "@/config";
 
 const STORAGE_SOURCE = "tradevaultArena.wallet.source";
 const STORAGE_ADDR = "tradevaultArena.wallet.address";
 const STORAGE_NETWORK = "tradevaultArena.network";
 const STORAGE_PROGRAM_ID = "tradevaultArena.programId";
+const TRADE_HISTORY_PREFIX = "tradevaultArena.tradeHistory.";
+
+function purgeOldProgramCache(nextProgramId: string) {
+  const keysToRemove: string[] = [];
+
+  for (let index = 0; index < localStorage.length; index += 1) {
+    const key = localStorage.key(index);
+    if (!key) continue;
+
+    if (key.startsWith(TRADE_HISTORY_PREFIX) && !key.startsWith(`${TRADE_HISTORY_PREFIX}${nextProgramId}.`)) {
+      keysToRemove.push(key);
+      continue;
+    }
+
+    if (key.startsWith("tradevault-risk-")) {
+      keysToRemove.push(key);
+    }
+  }
+
+  keysToRemove.forEach((key) => localStorage.removeItem(key));
+}
+
+function resolveInitialProgramId(): string {
+  const targetProgramId = PROGRAM_ID;
+  const storedId = localStorage.getItem(STORAGE_PROGRAM_ID)?.trim();
+
+  if (storedId !== targetProgramId) {
+    purgeOldProgramCache(targetProgramId);
+    localStorage.setItem(STORAGE_PROGRAM_ID, targetProgramId);
+  }
+
+  return targetProgramId;
+}
 
 // ---------------------------------------------------------------------------
 // Networks
@@ -35,6 +69,17 @@ export const NETWORKS: Network[] = [
   { id: "mainnet", name: "Vara Mainnet", endpoint: "wss://rpc.vara.network" },
   { id: "local", name: "Local Node", endpoint: "ws://localhost:9944", isTestnet: true },
 ];
+
+const apiInstances = new Map<string, Promise<GearApi>>();
+
+function getApiInstance(endpoint: string) {
+  const existing = apiInstances.get(endpoint);
+  if (existing) return existing;
+
+  const created = GearApi.create({ providerAddress: endpoint });
+  apiInstances.set(endpoint, created);
+  return created;
+}
 
 function resolveInitialNetwork(): Network {
   const envEndpoint = import.meta.env.VITE_VARA_ENDPOINT;
@@ -80,7 +125,7 @@ type ChainContextValue = {
   signer: unknown | null;
   /** Balance in VARA (human-readable, 12 decimals) */
   balance: string | null;
-  connect: () => Promise<void>;
+  connect: () => Promise<string[]>;
   connectWallet: (source: string) => Promise<void>;
   selectAccount: (account: WalletAccount) => void;
   disconnect: () => void;
@@ -90,14 +135,12 @@ const ChainContext = createContext<ChainContextValue | null>(null);
 
 export function ChainProvider({ children }: { children: React.ReactNode }) {
   const [network, setNetwork] = useState<Network>(resolveInitialNetwork);
-  const [programId, _setProgramId] = useState<string>(
-    () => localStorage.getItem(STORAGE_PROGRAM_ID) || import.meta.env.VITE_PROGRAM_ID || ""
-  );
+  const [programId, _setProgramId] = useState<string>(resolveInitialProgramId);
   const [api, setApi] = useState<GearApi | null>(null);
   const [apiStatus, setApiStatus] = useState<ApiStatus>("connecting");
   const [apiError, setApiError] = useState<string | null>(null);
   const [blockNumber, setBlockNumber] = useState<number | null>(null);
-  const [walletStatus, setWalletStatus] = useState<WalletStatus>("loading");
+  const [walletStatus, setWalletStatus] = useState<WalletStatus>("disconnected");
   const [walletError, setWalletError] = useState<string | null>(null);
   const [wallets, setWallets] = useState<string[]>([]);
   const [account, setAccount] = useState<WalletAccount | null>(null);
@@ -153,15 +196,11 @@ export function ChainProvider({ children }: { children: React.ReactNode }) {
     setApiStatus("connecting");
     setApiError(null);
     setBlockNumber(null);
+    setApi(null);
 
-    GearApi.create({ providerAddress: network.endpoint })
+    getApiInstance(network.endpoint)
       .then(async (nextApi) => {
-        if (cancelled) {
-          (nextApi as unknown as { disconnect: () => Promise<void> })
-            .disconnect()
-            .catch(() => undefined);
-          return;
-        }
+        if (cancelled) return;
         setApi(nextApi);
         setApiStatus("ready");
 
@@ -199,19 +238,11 @@ export function ChainProvider({ children }: { children: React.ReactNode }) {
     return () => {
       cancelled = true;
       unsub?.();
-      setApi((prev) => {
-        if (prev)
-          (
-            prev as unknown as { disconnect: () => Promise<void> }
-          )
-            .disconnect()
-            .catch(() => undefined);
-        return null;
-      });
     };
   }, [network]);
 
   const setProgramId = useCallback((id: string) => {
+    purgeOldProgramCache(id);
     localStorage.setItem(STORAGE_PROGRAM_ID, id);
     _setProgramId(id);
   }, []);
@@ -287,15 +318,12 @@ export function ChainProvider({ children }: { children: React.ReactNode }) {
 
     if (available.length === 0) {
       setWalletStatus("unavailable");
-      return;
+      return available;
     }
     setWalletStatus("disconnected");
     setWalletError(null);
+    return available;
   }, []);
-
-  useEffect(() => {
-    connect().catch(() => undefined);
-  }, [connect]);
 
   const value = useMemo<ChainContextValue>(
     () => ({

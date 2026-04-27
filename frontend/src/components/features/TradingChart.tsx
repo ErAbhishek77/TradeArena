@@ -1,6 +1,5 @@
 import { motion } from "framer-motion";
 import { PriceTicker } from "@/components/ui/PriceTicker";
-import { BGPattern } from "@/components/ui/bg-pattern";
 import { LivePriceChart } from "@/components/live-price-chart";
 
 export function TradingChart({
@@ -26,21 +25,14 @@ export function TradingChart({
     <motion.div
       initial={{ opacity: 0, y: 12 }}
       animate={{ opacity: 1, y: 0 }}
-      className="relative overflow-hidden rounded-[12px] border border-[var(--border-soft)] bg-[var(--panel)] p-4"
+      className="rounded-[12px] border border-[var(--border-soft)] bg-[var(--panel)] p-4"
     >
-      <BGPattern
-        variant="dots"
-        mask="fade-edges"
-        size={28}
-        fill="rgba(255,255,255,0.045)"
-        className="opacity-60"
-      />
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <div>
-          <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[#475569]">
+          <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--label)]">
             BTC/USD
           </p>
-          <p className="mt-2 font-mono text-[24px] font-semibold tabular-nums text-[var(--text)]">{livePrice}</p>
+          <p className="mt-2 font-mono text-[20px] font-semibold tabular-nums text-[var(--text)]">{livePrice}</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <PriceTicker label="Live Price" price={livePrice} change={liveChange} />
@@ -73,7 +65,7 @@ function LegendChip({
   const dot =
     tone === "cyan" ? "bg-[var(--primary)]" : tone === "purple" ? "bg-[var(--accent)]" : "bg-[var(--long)]";
   return (
-    <div className="inline-flex items-center gap-2 rounded-full border border-[var(--border-soft)] bg-[var(--panel-soft)] px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--muted)]">
+    <div className="inline-flex items-center gap-2 rounded-full border border-[var(--border-soft)] bg-[var(--panel-soft)] px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--muted)]">
       <span className={`h-2 w-2 rounded-full ${dot}`} />
       {label}
     </div>

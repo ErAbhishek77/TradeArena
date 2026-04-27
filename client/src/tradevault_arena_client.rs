@@ -72,12 +72,23 @@ pub mod tradevault_arena {
             &mut self,
             tournament_id: u64,
         ) -> sails_rs::client::PendingCall<io::JoinTournament, Self::Env>;
+        fn keeper_tick(
+            &mut self,
+            tournament_id: u64,
+            new_btc_price: u128,
+        ) -> sails_rs::client::PendingCall<io::KeeperTick, Self::Env>;
         fn open_position(
             &mut self,
             tournament_id: u64,
             direction: PositionDirection,
             size: u128,
+            stop_loss_price: Option<u128>,
+            take_profit_price: Option<u128>,
         ) -> sails_rs::client::PendingCall<io::OpenPosition, Self::Env>;
+        fn process_tournament(
+            &mut self,
+            tournament_id: u64,
+        ) -> sails_rs::client::PendingCall<io::ProcessTournament, Self::Env>;
         fn settle_tournament(
             &mut self,
             tournament_id: u64,
@@ -86,6 +97,11 @@ pub mod tradevault_arena {
             &mut self,
             new_price: u128,
         ) -> sails_rs::client::PendingCall<io::UpdateMockPrice, Self::Env>;
+        fn update_price_and_process(
+            &mut self,
+            tournament_id: u64,
+            new_btc_price: u128,
+        ) -> sails_rs::client::PendingCall<io::UpdatePriceAndProcess, Self::Env>;
         fn admin(&self) -> sails_rs::client::PendingCall<io::Admin, Self::Env>;
         fn current_mock_price(
             &self,
@@ -152,13 +168,34 @@ pub mod tradevault_arena {
         ) -> sails_rs::client::PendingCall<io::JoinTournament, Self::Env> {
             self.pending_call((tournament_id,))
         }
+        fn keeper_tick(
+            &mut self,
+            tournament_id: u64,
+            new_btc_price: u128,
+        ) -> sails_rs::client::PendingCall<io::KeeperTick, Self::Env> {
+            self.pending_call((tournament_id, new_btc_price))
+        }
         fn open_position(
             &mut self,
             tournament_id: u64,
             direction: PositionDirection,
             size: u128,
+            stop_loss_price: Option<u128>,
+            take_profit_price: Option<u128>,
         ) -> sails_rs::client::PendingCall<io::OpenPosition, Self::Env> {
-            self.pending_call((tournament_id, direction, size))
+            self.pending_call((
+                tournament_id,
+                direction,
+                size,
+                stop_loss_price,
+                take_profit_price,
+            ))
+        }
+        fn process_tournament(
+            &mut self,
+            tournament_id: u64,
+        ) -> sails_rs::client::PendingCall<io::ProcessTournament, Self::Env> {
+            self.pending_call((tournament_id,))
         }
         fn settle_tournament(
             &mut self,
@@ -171,6 +208,13 @@ pub mod tradevault_arena {
             new_price: u128,
         ) -> sails_rs::client::PendingCall<io::UpdateMockPrice, Self::Env> {
             self.pending_call((new_price,))
+        }
+        fn update_price_and_process(
+            &mut self,
+            tournament_id: u64,
+            new_btc_price: u128,
+        ) -> sails_rs::client::PendingCall<io::UpdatePriceAndProcess, Self::Env> {
+            self.pending_call((tournament_id, new_btc_price))
         }
         fn admin(&self) -> sails_rs::client::PendingCall<io::Admin, Self::Env> {
             self.pending_call(())
@@ -211,9 +255,12 @@ pub mod tradevault_arena {
         sails_rs::io_struct_impl!(CreateTournament (name: String, entry_fee: u128, start_time: u64, end_time: u64, initial_virtual_balance: u128, max_participants: u32) -> super::TournamentView);
         sails_rs::io_struct_impl!(EndTournament (tournament_id: u64) -> super::TournamentView);
         sails_rs::io_struct_impl!(JoinTournament (tournament_id: u64) -> super::ParticipantView);
-        sails_rs::io_struct_impl!(OpenPosition (tournament_id: u64, direction: super::PositionDirection, size: u128) -> super::ParticipantView);
+        sails_rs::io_struct_impl!(KeeperTick (tournament_id: u64, new_btc_price: u128) -> super::KeeperTickSummary);
+        sails_rs::io_struct_impl!(OpenPosition (tournament_id: u64, direction: super::PositionDirection, size: u128, stop_loss_price: Option<u128>, take_profit_price: Option<u128>) -> super::ParticipantView);
+        sails_rs::io_struct_impl!(ProcessTournament (tournament_id: u64) -> super::KeeperTickSummary);
         sails_rs::io_struct_impl!(SettleTournament (tournament_id: u64) -> super::SettlementResult);
         sails_rs::io_struct_impl!(UpdateMockPrice (new_price: u128) -> u128);
+        sails_rs::io_struct_impl!(UpdatePriceAndProcess (tournament_id: u64, new_btc_price: u128) -> super::KeeperTickSummary);
         sails_rs::io_struct_impl!(Admin () -> ActorId);
         sails_rs::io_struct_impl!(CurrentMockPrice () -> u128);
         sails_rs::io_struct_impl!(Leaderboard (tournament_id: u64) -> Vec<super::LeaderboardEntry>);
@@ -240,18 +287,35 @@ pub mod tradevault_arena {
             MockPriceUpdated {
                 price: u128,
             },
+            PriceUpdated {
+                tournament_id: u64,
+                price: u128,
+            },
             PositionOpened {
                 tournament_id: u64,
                 participant: ActorId,
                 direction: PositionDirection,
                 size: u128,
                 entry_price: u128,
+                stop_loss_price: Option<u128>,
+                take_profit_price: Option<u128>,
             },
             PositionClosed {
                 tournament_id: u64,
                 participant: ActorId,
                 realized_pnl: i128,
                 exit_price: u128,
+                close_reason: CloseReason,
+            },
+            StopLossTriggered {
+                tournament_id: u64,
+                participant: ActorId,
+                trigger_price: u128,
+            },
+            TakeProfitTriggered {
+                tournament_id: u64,
+                participant: ActorId,
+                trigger_price: u128,
             },
             TournamentEnded {
                 tournament_id: u64,
@@ -272,8 +336,11 @@ pub mod tradevault_arena {
                 "TournamentCreated",
                 "TournamentJoined",
                 "MockPriceUpdated",
+                "PriceUpdated",
                 "PositionOpened",
                 "PositionClosed",
+                "StopLossTriggered",
+                "TakeProfitTriggered",
                 "TournamentEnded",
                 "TournamentSettled",
                 "RewardClaimed",
@@ -297,6 +364,8 @@ pub struct ParticipantView {
     pub return_percentage_bps: i128,
     pub position: Option<Position>,
     pub claimable_reward: u128,
+    pub last_close_reason: Option<CloseReason>,
+    pub last_close_price: Option<u128>,
 }
 #[derive(PartialEq, Clone, Debug, Encode, Decode, TypeInfo)]
 #[codec(crate = sails_rs::scale_codec)]
@@ -305,6 +374,8 @@ pub struct Position {
     pub entry_price: u128,
     pub size: u128,
     pub direction: PositionDirection,
+    pub stop_loss_price: Option<u128>,
+    pub take_profit_price: Option<u128>,
     pub is_open: bool,
 }
 #[derive(PartialEq, Clone, Debug, Encode, Decode, TypeInfo)]
@@ -313,6 +384,14 @@ pub struct Position {
 pub enum PositionDirection {
     Long,
     Short,
+}
+#[derive(PartialEq, Clone, Debug, Encode, Decode, TypeInfo)]
+#[codec(crate = sails_rs::scale_codec)]
+#[scale_info(crate = sails_rs::scale_info)]
+pub enum CloseReason {
+    Manual,
+    StopLoss,
+    TakeProfit,
 }
 #[derive(PartialEq, Clone, Debug, Encode, Decode, TypeInfo)]
 #[codec(crate = sails_rs::scale_codec)]
@@ -349,6 +428,15 @@ pub struct WinnerPayout {
     pub payout: u128,
     pub final_value: i128,
     pub return_percentage_bps: i128,
+}
+#[derive(PartialEq, Clone, Debug, Encode, Decode, TypeInfo)]
+#[codec(crate = sails_rs::scale_codec)]
+#[scale_info(crate = sails_rs::scale_info)]
+pub struct KeeperTickSummary {
+    pub price_updated: bool,
+    pub positions_closed: u32,
+    pub tournament_ended: bool,
+    pub tournament_settled: bool,
 }
 #[derive(PartialEq, Clone, Debug, Encode, Decode, TypeInfo)]
 #[codec(crate = sails_rs::scale_codec)]

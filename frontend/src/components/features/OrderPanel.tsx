@@ -22,6 +22,12 @@ export function OrderPanel({
   secondaryActionLabel,
   onSecondaryAction,
   secondaryDisabled,
+  activePositionSummary,
+  stopLossPrice,
+  onStopLossChange,
+  takeProfitPrice,
+  onTakeProfitChange,
+  riskControlsHelper,
   helper,
   warning,
 }: {
@@ -43,16 +49,29 @@ export function OrderPanel({
   secondaryActionLabel?: string;
   onSecondaryAction?: () => void;
   secondaryDisabled?: boolean;
+  activePositionSummary?: {
+    direction: string;
+    size: string;
+    entryPrice: string;
+  } | null;
+  stopLossPrice: string;
+  onStopLossChange: (value: string) => void;
+  takeProfitPrice: string;
+  onTakeProfitChange: (value: string) => void;
+  riskControlsHelper?: ReactNode;
   helper?: ReactNode;
   warning?: ReactNode;
 }) {
+  const hasOpenPosition = Boolean(activePositionSummary);
+  const riskConfigured = Boolean(stopLossPrice.trim() || takeProfitPrice.trim());
+
   return (
     <div className="rounded-[12px] border border-[var(--border-soft)] bg-[var(--panel)] p-4">
       <div>
-        <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[#475569]">
+        <p className="text-[10px] uppercase tracking-[0.12em] text-[#475569]">
           Order
         </p>
-        <p className="mt-2 text-lg font-semibold text-[var(--text)]">
+        <p className="mt-2 text-[18px] font-semibold text-[var(--text)]">
           {tournamentName ?? "Tournament Order"}
         </p>
         {(timeLeft || prizePool) ? (
@@ -67,6 +86,7 @@ export function OrderPanel({
         <SegmentedControl
           value={direction}
           onChange={(value) => onDirectionChange(value as "Long" | "Short")}
+          disabled={hasOpenPosition || actionDisabled}
           options={[
             { label: "LONG", value: "Long", tone: "positive" },
             { label: "SHORT", value: "Short", tone: "danger" },
@@ -74,37 +94,38 @@ export function OrderPanel({
         />
 
         <label className="block">
-          <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[#475569]">
+          <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--label)]">
             Size
           </span>
-          <div className="mt-2 flex min-h-[44px] items-center rounded-[7px] border border-[var(--border-soft)] bg-[var(--sidebar)] px-4">
+          <div className="mt-2 flex min-h-[40px] items-center rounded-[7px] border border-[rgba(255,255,255,0.07)] bg-[var(--sidebar)] px-3">
             <input
               value={size}
               onChange={(event) => onSizeChange(event.target.value)}
-              className="w-full bg-transparent text-sm text-[var(--text)] outline-none"
+              disabled={hasOpenPosition || actionDisabled}
+              className="w-full bg-transparent text-[13px] text-[var(--text)] outline-none"
               placeholder="100"
             />
-            <span className="text-sm text-[var(--muted)]">USDT</span>
+            <span className="text-[11px] text-[var(--label)]">USDT</span>
           </div>
         </label>
 
-        <div className="space-y-3 rounded-[8px] bg-[var(--sidebar)] p-4 text-sm">
+        <div className="space-y-1 rounded-[8px] border border-[var(--border-soft)] bg-[var(--sidebar)] p-3 text-[13px]">
           <InfoRow label="Available" value={availableBalance} />
-          <InfoRow label="Entry Price" value={entryPrice} />
-          <InfoRow label="Current Price" value={currentPrice} />
+          <InfoRow label="Tournament Price" value={entryPrice} />
+          <InfoRow label="Live BTC Price" value={currentPrice} />
           <InfoRow
-            label="Est. Profit / Loss"
+            label="Live Preview P/L"
             value={
               <motion.span
                 key={estimatedPnl.value}
                 initial={{ scale: 1 }}
                 animate={{ scale: [1, 1.04, 1] }}
                 transition={{ duration: 0.2 }}
-                className={`font-mono ${
+                className={`font-mono tabular-nums ${
                   estimatedPnl.tone === "positive"
-                    ? "text-[var(--green)]"
+                    ? "text-[var(--long)]"
                     : estimatedPnl.tone === "negative"
-                      ? "text-[var(--red)]"
+                      ? "text-[var(--short)]"
                       : "text-[var(--text)]"
                 }`}
               >
@@ -114,12 +135,83 @@ export function OrderPanel({
           />
         </div>
 
-        {warning ? <div className="text-sm text-[var(--red)]">{warning}</div> : null}
-        {helper ? <div className="text-sm text-[var(--muted)]">{helper}</div> : null}
+        <details
+          className="rounded-[8px] border border-[var(--border-soft)] bg-[var(--sidebar)] p-3"
+          open={riskConfigured}
+        >
+          <summary className="flex cursor-pointer list-none items-center justify-between gap-3">
+            <div>
+              <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--label)]">
+                Risk Controls
+              </p>
+              <p className="mt-2 text-[12px] text-[var(--muted)]">
+                Optional Stop Loss and Take Profit levels.
+              </p>
+            </div>
+            <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--primary)]">
+              {riskConfigured ? "Configured" : "Optional"}
+            </span>
+          </summary>
+          <div className="mt-4 grid gap-3 sm:grid-cols-2">
+            <label className="block">
+              <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--label)]">
+                Stop Loss Price
+              </span>
+              <div className="mt-2 flex min-h-[40px] items-center rounded-[7px] border border-[rgba(255,255,255,0.07)] bg-[var(--panel-soft)] px-3">
+                <span className="text-[11px] text-[var(--label)]">$</span>
+                <input
+                  value={stopLossPrice}
+                  onChange={(event) => onStopLossChange(event.target.value)}
+                  disabled={hasOpenPosition || actionDisabled}
+                  className="w-full bg-transparent px-2 text-[13px] text-[var(--text)] outline-none"
+                  placeholder="58,500"
+                  inputMode="decimal"
+                />
+              </div>
+            </label>
+            <label className="block">
+              <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--label)]">
+                Take Profit Price
+              </span>
+              <div className="mt-2 flex min-h-[40px] items-center rounded-[7px] border border-[rgba(255,255,255,0.07)] bg-[var(--panel-soft)] px-3">
+                <span className="text-[11px] text-[var(--label)]">$</span>
+                <input
+                  value={takeProfitPrice}
+                  onChange={(event) => onTakeProfitChange(event.target.value)}
+                  disabled={hasOpenPosition || actionDisabled}
+                  className="w-full bg-transparent px-2 text-[13px] text-[var(--text)] outline-none"
+                  placeholder="63,000"
+                  inputMode="decimal"
+                />
+              </div>
+            </label>
+          </div>
+          {riskControlsHelper ? (
+            <div className="mt-3 text-[12px] text-[var(--muted)]">{riskControlsHelper}</div>
+          ) : null}
+        </details>
 
-        <Button variant={actionVariant} fullWidth onClick={onAction} disabled={actionDisabled}>
-          {actionLabel}
-        </Button>
+        {activePositionSummary ? (
+          <div className="rounded-[8px] border border-[var(--border-soft)] bg-[var(--panel-soft)] p-3">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--label)]">
+              Open Position
+            </p>
+            <div className="mt-3 grid gap-3 sm:grid-cols-3">
+              <InfoRow label="Direction" value={activePositionSummary.direction} />
+              <InfoRow label="Size" value={activePositionSummary.size} />
+              <InfoRow label="Entry Price" value={activePositionSummary.entryPrice} />
+            </div>
+          </div>
+        ) : null}
+
+        {warning ? <div className="text-[12px] text-[var(--short)]">{warning}</div> : null}
+        {helper ? <div className="text-[12px] text-[var(--muted)]">{helper}</div> : null}
+
+        {!activePositionSummary ? (
+          <Button variant={actionVariant} fullWidth onClick={onAction} disabled={actionDisabled}>
+            {actionLabel}
+          </Button>
+        ) : null}
         {secondaryActionLabel && onSecondaryAction ? (
           <Button variant="secondary" fullWidth onClick={onSecondaryAction} disabled={secondaryDisabled}>
             {secondaryActionLabel}
@@ -139,8 +231,8 @@ function InfoRow({
 }) {
   return (
     <div className="flex items-center justify-between gap-3">
-      <span className="text-[var(--muted)]">{label}</span>
-      <span className="font-mono tabular-nums text-[var(--text)]">{value}</span>
+      <span className="text-[11px] uppercase tracking-[0.05em] text-[var(--muted)]">{label}</span>
+      <span className="font-mono text-[13px] tabular-nums text-[var(--text)]">{value}</span>
     </div>
   );
 }

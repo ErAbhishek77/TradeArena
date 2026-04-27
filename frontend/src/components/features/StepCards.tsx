@@ -4,20 +4,20 @@ import { motion } from "framer-motion";
 const steps = [
   {
     id: "01",
-    title: "Join",
-    body: "Pick a tournament. Pay the entry fee in VARA.",
+    title: "Join Arena",
+    body: "Pick a BTC tournament and enter with a simple VARA fee.",
     icon: Wallet,
   },
   {
     id: "02",
-    title: "Trade",
-    body: "Go long or short on BTC with virtual balance.",
+    title: "Trade BTC",
+    body: "Use virtual balance to open Long or Short positions on BTC.",
     icon: TrendUp,
   },
   {
     id: "03",
-    title: "Win",
-    body: "Highest Return % wins the on-chain prize pool.",
+    title: "Win VARA",
+    body: "Finish near the top of Return % and earn from the prize pool.",
     icon: Trophy,
   },
 ];
@@ -33,16 +33,19 @@ export function StepCards() {
             initial={{ opacity: 0, y: 12 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.24, delay: index * 0.08 }}
-            className="rounded-[10px] border border-white/[0.06] bg-[var(--sidebar)] p-4"
+            whileHover={{ y: -3, borderColor: "rgba(34,211,238,0.14)" }}
+            className="rounded-[10px] border border-[var(--border-soft)] bg-[var(--sidebar)] p-[14px]"
           >
             <div className="flex items-center justify-between gap-3">
               <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--primary)]">
                 {step.id}
               </span>
-              <Icon size={16} className="text-[var(--primary)]" />
+              <div className="flex h-8 w-8 items-center justify-center rounded-[8px] border border-[var(--border-soft)] bg-[var(--panel-soft)] text-[var(--primary)]">
+                <Icon size={16} />
+              </div>
             </div>
-            <p className="mt-4 text-sm font-bold text-[var(--text)]">{step.title}</p>
-            <p className="mt-2 text-xs leading-5 text-[var(--muted)]">{step.body}</p>
+            <p className="mt-4 text-[14px] font-semibold text-[var(--text)]">{step.title}</p>
+            <p className="mt-2 text-[12px] leading-5 text-[var(--muted)]">{step.body}</p>
           </motion.div>
         );
       })}

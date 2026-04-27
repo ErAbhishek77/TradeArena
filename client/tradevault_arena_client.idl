@@ -8,18 +8,28 @@ type ParticipantView = struct {
   return_percentage_bps: i128,
   position: opt Position,
   claimable_reward: u128,
+  last_close_reason: opt CloseReason,
+  last_close_price: opt u128,
 };
 
 type Position = struct {
   entry_price: u128,
   size: u128,
   direction: PositionDirection,
+  stop_loss_price: opt u128,
+  take_profit_price: opt u128,
   is_open: bool,
 };
 
 type PositionDirection = enum {
   Long,
   Short,
+};
+
+type CloseReason = enum {
+  Manual,
+  StopLoss,
+  TakeProfit,
 };
 
 type TournamentView = struct {
@@ -52,6 +62,13 @@ type WinnerPayout = struct {
   return_percentage_bps: i128,
 };
 
+type KeeperTickSummary = struct {
+  price_updated: bool,
+  positions_closed: u32,
+  tournament_ended: bool,
+  tournament_settled: bool,
+};
+
 type SettlementResult = struct {
   tournament_id: u64,
   final_btc_price: u128,
@@ -79,9 +96,12 @@ service TradevaultArena {
   CreateTournament : (name: str, entry_fee: u128, start_time: u64, end_time: u64, initial_virtual_balance: u128, max_participants: u32) -> TournamentView;
   EndTournament : (tournament_id: u64) -> TournamentView;
   JoinTournament : (tournament_id: u64) -> ParticipantView;
-  OpenPosition : (tournament_id: u64, direction: PositionDirection, size: u128) -> ParticipantView;
+  KeeperTick : (tournament_id: u64, new_btc_price: u128) -> KeeperTickSummary;
+  OpenPosition : (tournament_id: u64, direction: PositionDirection, size: u128, stop_loss_price: opt u128, take_profit_price: opt u128) -> ParticipantView;
+  ProcessTournament : (tournament_id: u64) -> KeeperTickSummary;
   SettleTournament : (tournament_id: u64) -> SettlementResult;
   UpdateMockPrice : (new_price: u128) -> u128;
+  UpdatePriceAndProcess : (tournament_id: u64, new_btc_price: u128) -> KeeperTickSummary;
   query Admin : () -> actor_id;
   query CurrentMockPrice : () -> u128;
   query Leaderboard : (tournament_id: u64) -> vec LeaderboardEntry;
@@ -102,18 +122,35 @@ service TradevaultArena {
     MockPriceUpdated: struct {
       price: u128
     };
+    PriceUpdated: struct {
+      tournament_id: u64,
+      price: u128,
+    };
     PositionOpened: struct {
       tournament_id: u64,
       participant: actor_id,
       direction: PositionDirection,
       size: u128,
       entry_price: u128,
+      stop_loss_price: opt u128,
+      take_profit_price: opt u128,
     };
     PositionClosed: struct {
       tournament_id: u64,
       participant: actor_id,
       realized_pnl: i128,
       exit_price: u128,
+      close_reason: CloseReason,
+    };
+    StopLossTriggered: struct {
+      tournament_id: u64,
+      participant: actor_id,
+      trigger_price: u128,
+    };
+    TakeProfitTriggered: struct {
+      tournament_id: u64,
+      participant: actor_id,
+      trigger_price: u128,
     };
     TournamentEnded: struct {
       tournament_id: u64,

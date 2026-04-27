@@ -7,6 +7,7 @@ import {
   type ISeriesApi,
   type UTCTimestamp,
 } from "lightweight-charts";
+import { formatChainUsdPrice, formatUsdPrice, fromChainPriceValue } from "@/lib/format";
 import type { LivePricePoint } from "@/lib/live-price";
 
 type LivePriceChartProps = {
@@ -30,6 +31,10 @@ export function LivePriceChart({
   const seriesRef = useRef<ISeriesApi<"Area"> | null>(null);
   const tournamentLineRef = useRef<IPriceLine | null>(null);
   const entryLineRef = useRef<IPriceLine | null>(null);
+  const seededRef = useRef(false);
+  const lastTimeRef = useRef<number | null>(null);
+  const firstTimeRef = useRef<number | null>(null);
+  const lastLengthRef = useRef(0);
 
   const data = useMemo<SeriesPoint[]>(
     () =>
@@ -40,12 +45,27 @@ export function LivePriceChart({
     [priceHistory],
   );
 
+  const cleanedData = useMemo<SeriesPoint[]>(() => {
+    const sorted = [...data].sort((left, right) => Number(left.time) - Number(right.time));
+    return sorted.filter((item, index, arr) => index === 0 || item.time > arr[index - 1].time);
+  }, [data]);
+
+  const cleanedHistory = useMemo(
+    () =>
+      [...priceHistory]
+        .sort((left, right) => left.timestamp - right.timestamp)
+        .filter((point, index, arr) => index === 0 || point.timestamp > arr[index - 1].timestamp),
+    [priceHistory],
+  );
+
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
 
     const chart = createChart(container, {
-      autoSize: true,
+      autoSize: false,
+      width: container.clientWidth,
+      height: 300,
       layout: {
         background: { type: ColorType.Solid, color: "transparent" },
         textColor: "#94a3b8",
@@ -95,7 +115,7 @@ export function LivePriceChart({
     seriesRef.current = series;
 
     const resizeObserver = new ResizeObserver(() => {
-      chart.applyOptions({ width: container.clientWidth });
+      chart.applyOptions({ width: container.clientWidth, height: 300 });
       chart.timeScale().fitContent();
     });
 
@@ -107,15 +127,44 @@ export function LivePriceChart({
       chart.remove();
       chartRef.current = null;
       seriesRef.current = null;
+      seededRef.current = false;
+      lastTimeRef.current = null;
+      firstTimeRef.current = null;
+      lastLengthRef.current = 0;
     };
   }, []);
 
   useEffect(() => {
-    if (!seriesRef.current) return;
+    const series = seriesRef.current;
+    if (!series || !cleanedData.length) return;
 
-    seriesRef.current.setData(data);
-    chartRef.current?.timeScale().fitContent();
-  }, [data]);
+    const latest = cleanedData[cleanedData.length - 1];
+    const first = cleanedData[0];
+    const shouldReset =
+      !seededRef.current ||
+      firstTimeRef.current == null ||
+      lastTimeRef.current == null ||
+      first.time !== firstTimeRef.current ||
+      cleanedData.length < lastLengthRef.current;
+
+    if (shouldReset) {
+      series.setData(cleanedData);
+      chartRef.current?.timeScale().fitContent();
+      seededRef.current = true;
+      firstTimeRef.current = Number(first.time);
+      lastTimeRef.current = Number(latest.time);
+      lastLengthRef.current = cleanedData.length;
+      return;
+    }
+
+    if (Number(latest.time) <= (lastTimeRef.current ?? 0)) {
+      return;
+    }
+
+    series.update(latest);
+    lastTimeRef.current = Number(latest.time);
+    lastLengthRef.current = cleanedData.length;
+  }, [cleanedData]);
 
   useEffect(() => {
     const series = seriesRef.current;
@@ -133,7 +182,7 @@ export function LivePriceChart({
 
     if (tournamentPrice && tournamentPrice > 0n) {
       tournamentLineRef.current = series.createPriceLine({
-        price: Number(tournamentPrice),
+        price: fromChainPriceValue(tournamentPrice),
         color: "#8B5CF6",
         lineWidth: 2,
         lineStyle: 2,
@@ -144,7 +193,7 @@ export function LivePriceChart({
 
     if (entryPrice && entryPrice > 0n) {
       entryLineRef.current = series.createPriceLine({
-        price: Number(entryPrice),
+        price: fromChainPriceValue(entryPrice),
         color: "#22C55E",
         lineWidth: 1,
         lineStyle: 2,
@@ -154,39 +203,41 @@ export function LivePriceChart({
     }
   }, [entryPrice, tournamentPrice]);
 
-  if (!priceHistory.length) {
+  if (!cleanedHistory.length) {
     return (
-      <div className="flex h-[280px] items-center justify-center rounded-[22px] border border-slate-800 bg-slate-900/60 text-sm text-slate-500">
+      <div className="flex h-[280px] items-center justify-center rounded-[10px] border border-[var(--border-soft)] bg-[var(--sidebar)] text-sm text-[var(--muted)]">
         Waiting for BTC/USD market data...
       </div>
     );
   }
 
-  const high = Math.max(...priceHistory.map((point) => point.price));
-  const low = Math.min(...priceHistory.map((point) => point.price));
-  const latest = priceHistory[priceHistory.length - 1];
+  const high = Math.max(...cleanedHistory.map((point) => point.high ?? point.price));
+  const low = Math.min(...cleanedHistory.map((point) => point.low ?? point.price));
+  const latest = cleanedHistory[cleanedHistory.length - 1];
 
   return (
-    <div className="rounded-[20px] border border-[var(--border)] bg-[var(--panel)] p-4">
+    <div className="rounded-[10px] border border-[var(--border-soft)] bg-[var(--sidebar)] p-3">
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <div>
-          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
+          <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--label)]">
             Live BTC/USD Chart
           </p>
-          <p className="mt-2 text-2xl font-semibold text-slate-50">
-            ${Math.round(latest.price).toLocaleString()}
+          <p className="mt-2 text-[18px] font-semibold text-[var(--text)]">
+            {formatUsdPrice(latest.price)}
           </p>
         </div>
         <div className="flex flex-wrap justify-end gap-2 text-right text-xs sm:text-sm">
           <ChartLegend label="Live BTC" color="#22D3EE" />
           {tournamentPrice && tournamentPrice > 0n ? (
-            <ChartLegend label="Tournament price" color="#8B5CF6" />
+            <ChartLegend label={`Tournament ${formatChainUsdPrice(tournamentPrice)}`} color="#8B5CF6" />
           ) : null}
-          {entryPrice && entryPrice > 0n ? <ChartLegend label="Entry price" color="#22C55E" /> : null}
+          {entryPrice && entryPrice > 0n ? (
+            <ChartLegend label={`Entry ${formatChainUsdPrice(entryPrice)}`} color="#22C55E" />
+          ) : null}
         </div>
         <div className="grid grid-cols-3 gap-2 text-right text-xs sm:text-sm">
-          <ChartStat label="High" value={`$${Math.round(high).toLocaleString()}`} />
-          <ChartStat label="Low" value={`$${Math.round(low).toLocaleString()}`} />
+          <ChartStat label="High" value={formatUsdPrice(high)} />
+          <ChartStat label="Low" value={formatUsdPrice(low)} />
           <ChartStat
             label="Updated"
             value={new Intl.DateTimeFormat(undefined, { timeStyle: "short" }).format(latest.timestamp)}
@@ -200,18 +251,18 @@ export function LivePriceChart({
 
 function ChartStat({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-2xl border border-[var(--border)] bg-[var(--panel-soft)] px-3 py-2">
-      <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">
+    <div className="rounded-[8px] border border-[var(--border-soft)] bg-[var(--panel-soft)] px-3 py-2">
+      <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--label)]">
         {label}
       </p>
-      <p className="mt-1 font-medium text-slate-200">{value}</p>
+      <p className="mt-1 font-mono text-[12px] font-medium tabular-nums text-[var(--text)]">{value}</p>
     </div>
   );
 }
 
 function ChartLegend({ label, color }: { label: string; color: string }) {
   return (
-    <div className="inline-flex items-center gap-2 rounded-full border border-[var(--border)] bg-[var(--panel-soft)] px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.08em] text-slate-300">
+    <div className="inline-flex items-center gap-2 rounded-full border border-[var(--border-soft)] bg-[var(--panel-soft)] px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-[var(--muted)]">
       <span className="h-2 w-2 rounded-full" style={{ backgroundColor: color }} />
       {label}
     </div>

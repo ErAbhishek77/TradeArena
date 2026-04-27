@@ -2,7 +2,8 @@ use sails_rs::gtest::constants::UNITS;
 use sails_rs::{client::*, gtest::*, ActorId};
 use tradevault_arena_client::{
     tradevault_arena::{self, *},
-    LeaderboardEntry, ParticipantView, PositionDirection, SettlementResult, TournamentStatus,
+    CloseReason, KeeperTickSummary, LeaderboardEntry, ParticipantView, PositionDirection,
+    SettlementResult, TournamentStatus,
     TournamentView, TradevaultArenaClient, TradevaultArenaClientCtors,
     TradevaultArenaClientProgram,
 };
@@ -196,7 +197,13 @@ async fn long_trade_flow_realizes_positive_pnl_and_leads_leaderboard() {
     let bob_env = actor_env(&env, BOB);
     let mut bob_service = service_for(program_id, &bob_env);
     let opened = bob_service
-        .open_position(tournament.tournament_id, PositionDirection::Long, 1_000)
+        .open_position(
+            tournament.tournament_id,
+            PositionDirection::Long,
+            1_000,
+            None,
+            None,
+        )
         .await
         .unwrap();
     assert!(opened.position.is_some());
@@ -246,7 +253,13 @@ async fn short_trade_flow_realizes_positive_pnl() {
     let charlie_env = actor_env(&env, CHARLIE);
     let mut charlie_service = service_for(program_id, &charlie_env);
     let opened = charlie_service
-        .open_position(tournament.tournament_id, PositionDirection::Short, 500)
+        .open_position(
+            tournament.tournament_id,
+            PositionDirection::Short,
+            500,
+            None,
+            None,
+        )
         .await
         .unwrap();
     assert!(opened.position.is_some());
@@ -263,6 +276,242 @@ async fn short_trade_flow_realizes_positive_pnl() {
     assert_eq!(closed.realized_pnl, 50);
     assert_eq!(closed.final_value, 1_050);
     assert!(closed.position.is_none());
+}
+
+#[tokio::test]
+async fn keeper_tick_closes_long_position_on_stop_loss() {
+    let (program, env) = deploy_program().await;
+    let program_id = program.id();
+    let now = env.system().block_timestamp();
+    let tournament = create_tournament(
+        program_id,
+        &env,
+        "Long Stop Loss",
+        now + 8 * BLOCK_MS,
+        now + 24 * BLOCK_MS,
+        3,
+    )
+    .await;
+
+    let _joined = join_tournament(program_id, &env, BOB, tournament.tournament_id).await;
+    advance_to_timestamp(&env, tournament.start_time);
+
+    let bob_env = actor_env(&env, BOB);
+    let mut bob_service = service_for(program_id, &bob_env);
+    let opened = bob_service
+        .open_position(
+            tournament.tournament_id,
+            PositionDirection::Long,
+            1_000,
+            Some(95),
+            Some(130),
+        )
+        .await
+        .unwrap();
+    assert_eq!(opened.position.unwrap().stop_loss_price, Some(95));
+
+    let mut admin_service = service_for(program_id, &env);
+    let summary: KeeperTickSummary = admin_service
+        .keeper_tick(tournament.tournament_id, 95)
+        .await
+        .unwrap();
+    assert_eq!(summary.positions_closed, 1);
+    assert!(summary.price_updated);
+
+    let participant = bob_service.participant(tournament.tournament_id, BOB.into()).await.unwrap();
+    assert!(participant.position.is_none());
+    assert_eq!(participant.last_close_reason, Some(CloseReason::StopLoss));
+    assert_eq!(participant.last_close_price, Some(95));
+}
+
+#[tokio::test]
+async fn keeper_tick_closes_long_position_on_take_profit() {
+    let (program, env) = deploy_program().await;
+    let program_id = program.id();
+    let now = env.system().block_timestamp();
+    let tournament = create_tournament(
+        program_id,
+        &env,
+        "Long Take Profit",
+        now + 8 * BLOCK_MS,
+        now + 24 * BLOCK_MS,
+        3,
+    )
+    .await;
+
+    let _joined = join_tournament(program_id, &env, BOB, tournament.tournament_id).await;
+    advance_to_timestamp(&env, tournament.start_time);
+
+    let bob_env = actor_env(&env, BOB);
+    let mut bob_service = service_for(program_id, &bob_env);
+    let _ = bob_service
+        .open_position(
+            tournament.tournament_id,
+            PositionDirection::Long,
+            1_000,
+            Some(95),
+            Some(120),
+        )
+        .await
+        .unwrap();
+
+    let mut admin_service = service_for(program_id, &env);
+    let summary = admin_service
+        .keeper_tick(tournament.tournament_id, 120)
+        .await
+        .unwrap();
+    assert_eq!(summary.positions_closed, 1);
+
+    let participant = bob_service.participant(tournament.tournament_id, BOB.into()).await.unwrap();
+    assert_eq!(participant.last_close_reason, Some(CloseReason::TakeProfit));
+    assert_eq!(participant.last_close_price, Some(120));
+}
+
+#[tokio::test]
+async fn keeper_tick_closes_short_position_on_stop_loss() {
+    let (program, env) = deploy_program().await;
+    let program_id = program.id();
+    let now = env.system().block_timestamp();
+    let tournament = create_tournament(
+        program_id,
+        &env,
+        "Short Stop Loss",
+        now + 8 * BLOCK_MS,
+        now + 24 * BLOCK_MS,
+        3,
+    )
+    .await;
+
+    let _joined = join_tournament(program_id, &env, CHARLIE, tournament.tournament_id).await;
+    advance_to_timestamp(&env, tournament.start_time);
+
+    let charlie_env = actor_env(&env, CHARLIE);
+    let mut charlie_service = service_for(program_id, &charlie_env);
+    let _ = charlie_service
+        .open_position(
+            tournament.tournament_id,
+            PositionDirection::Short,
+            500,
+            Some(110),
+            Some(90),
+        )
+        .await
+        .unwrap();
+
+    let mut admin_service = service_for(program_id, &env);
+    let summary = admin_service
+        .keeper_tick(tournament.tournament_id, 110)
+        .await
+        .unwrap();
+    assert_eq!(summary.positions_closed, 1);
+
+    let participant = charlie_service
+        .participant(tournament.tournament_id, CHARLIE.into())
+        .await
+        .unwrap();
+    assert_eq!(participant.last_close_reason, Some(CloseReason::StopLoss));
+    assert_eq!(participant.last_close_price, Some(110));
+}
+
+#[tokio::test]
+async fn keeper_tick_closes_short_position_on_take_profit() {
+    let (program, env) = deploy_program().await;
+    let program_id = program.id();
+    let now = env.system().block_timestamp();
+    let tournament = create_tournament(
+        program_id,
+        &env,
+        "Short Take Profit",
+        now + 8 * BLOCK_MS,
+        now + 24 * BLOCK_MS,
+        3,
+    )
+    .await;
+
+    let _joined = join_tournament(program_id, &env, CHARLIE, tournament.tournament_id).await;
+    advance_to_timestamp(&env, tournament.start_time);
+
+    let charlie_env = actor_env(&env, CHARLIE);
+    let mut charlie_service = service_for(program_id, &charlie_env);
+    let _ = charlie_service
+        .open_position(
+            tournament.tournament_id,
+            PositionDirection::Short,
+            500,
+            Some(110),
+            Some(90),
+        )
+        .await
+        .unwrap();
+
+    let mut admin_service = service_for(program_id, &env);
+    let summary = admin_service
+        .keeper_tick(tournament.tournament_id, 90)
+        .await
+        .unwrap();
+    assert_eq!(summary.positions_closed, 1);
+
+    let participant = charlie_service
+        .participant(tournament.tournament_id, CHARLIE.into())
+        .await
+        .unwrap();
+    assert_eq!(participant.last_close_reason, Some(CloseReason::TakeProfit));
+    assert_eq!(participant.last_close_price, Some(90));
+}
+
+#[tokio::test]
+async fn keeper_tick_updates_price_and_processes_lifecycle_once() {
+    let (program, env) = deploy_program().await;
+    let program_id = program.id();
+    let now = env.system().block_timestamp();
+    let tournament = create_tournament(
+        program_id,
+        &env,
+        "Keeper Lifecycle",
+        now + 8 * BLOCK_MS,
+        now + 18 * BLOCK_MS,
+        3,
+    )
+    .await;
+
+    let _joined = join_tournament(program_id, &env, BOB, tournament.tournament_id).await;
+    advance_to_timestamp(&env, tournament.start_time);
+
+    let bob_env = actor_env(&env, BOB);
+    let mut bob_service = service_for(program_id, &bob_env);
+    let _ = bob_service
+        .open_position(
+            tournament.tournament_id,
+            PositionDirection::Long,
+            100,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    advance_to_timestamp(&env, tournament.end_time);
+
+    let mut admin_service = service_for(program_id, &env);
+    let summary = admin_service
+        .keeper_tick(tournament.tournament_id, 111)
+        .await
+        .unwrap();
+    assert!(summary.price_updated);
+    assert!(summary.tournament_ended);
+    assert!(summary.tournament_settled);
+
+    let settled = admin_service.tournament(tournament.tournament_id).await.unwrap();
+    assert!(matches!(settled.status, TournamentStatus::Settled));
+    assert_eq!(admin_service.current_mock_price().await.unwrap(), 111);
+
+    let second_summary = admin_service
+        .keeper_tick(tournament.tournament_id, 112)
+        .await
+        .unwrap();
+    assert!(second_summary.price_updated);
+    assert!(!second_summary.tournament_ended);
+    assert!(!second_summary.tournament_settled);
 }
 
 #[tokio::test]
@@ -294,15 +543,33 @@ async fn settlement_flow_ranks_top_three_and_distributes_603010() {
     let mut dave_service = service_for(program_id, &dave_env);
 
     let _ = bob_service
-        .open_position(tournament.tournament_id, PositionDirection::Long, 1_000)
+        .open_position(
+            tournament.tournament_id,
+            PositionDirection::Long,
+            1_000,
+            None,
+            None,
+        )
         .await
         .unwrap();
     let _ = charlie_service
-        .open_position(tournament.tournament_id, PositionDirection::Short, 500)
+        .open_position(
+            tournament.tournament_id,
+            PositionDirection::Short,
+            500,
+            None,
+            None,
+        )
         .await
         .unwrap();
     let _ = dave_service
-        .open_position(tournament.tournament_id, PositionDirection::Short, 500)
+        .open_position(
+            tournament.tournament_id,
+            PositionDirection::Short,
+            500,
+            None,
+            None,
+        )
         .await
         .unwrap();
 
@@ -401,7 +668,13 @@ async fn guardrails_reject_unauthorized_or_invalid_actions() {
     let _joined = join_tournament(program_id, &env, BOB, tournament.tournament_id).await;
 
     let trade_before_start: Result<ParticipantView, _> = bob_service
-        .open_position(tournament.tournament_id, PositionDirection::Long, 100)
+        .open_position(
+            tournament.tournament_id,
+            PositionDirection::Long,
+            100,
+            None,
+            None,
+        )
         .await;
     assert!(trade_before_start.is_err());
 
@@ -420,13 +693,25 @@ async fn guardrails_reject_unauthorized_or_invalid_actions() {
     assert!(close_without_position.is_err());
 
     let opened = bob_service
-        .open_position(tournament.tournament_id, PositionDirection::Long, 100)
+        .open_position(
+            tournament.tournament_id,
+            PositionDirection::Long,
+            100,
+            None,
+            None,
+        )
         .await
         .unwrap();
     assert!(opened.position.is_some());
 
     let second_open_result: Result<ParticipantView, _> = bob_service
-        .open_position(tournament.tournament_id, PositionDirection::Short, 100)
+        .open_position(
+            tournament.tournament_id,
+            PositionDirection::Short,
+            100,
+            None,
+            None,
+        )
         .await;
     assert!(second_open_result.is_err());
 }

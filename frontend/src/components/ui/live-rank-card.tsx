@@ -19,10 +19,10 @@ export function LiveRankCard({
     kind === "rank" ? Trophy : kind === "pnl" ? TrendingUp : kind === "trades" ? Waves : Wallet;
 
   return (
-    <ArenaCard className="min-h-[160px]" glow={tone === "positive"} highlight={tone === "warning"}>
+    <ArenaCard className="min-h-[140px]" glow={tone === "positive"} highlight={tone === "warning"}>
       <div className="flex items-start justify-between gap-3">
         <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--subtle)]">{label}</p>
-        <div className="rounded-xl border border-[var(--border-soft)] bg-[var(--panel-soft)] p-2 text-[var(--primary-strong)]">
+        <div className="rounded-[8px] border border-[var(--border-soft)] bg-[var(--sidebar)] p-2 text-[var(--primary)]">
           <Icon size={16} />
         </div>
       </div>
