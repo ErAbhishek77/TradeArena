@@ -1,5 +1,6 @@
 import { motion } from "framer-motion";
 import { cn } from "@/lib/utils";
+import { Trophy, CurrencyCircleDollar, Users, Clock, Star, ArrowRight, ChartLine, WarningCircle, CheckCircle, Timer } from "@phosphor-icons/react";
 
 type SnapshotStatusKind = "live" | "soon" | "ended" | "settled" | "settling" | "claim";
 
@@ -36,23 +37,37 @@ export function LiveArenaSnapshot({
         hidden: { opacity: 0, y: 16 },
         show: { opacity: 1, y: 0, transition: { duration: 0.32 } },
       }}
-      className="product-card p-5 sm:p-6"
+      className="product-card overflow-hidden rounded-2xl p-5 sm:p-6"
     >
-      <div className="flex flex-col gap-4 border-b border-white/[0.06] pb-4 sm:flex-row sm:items-start sm:justify-between">
-        <div>
-          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--subtle)]">
-            Live Arena Snapshot
-          </p>
-          <h2 className="mt-2 text-xl font-semibold text-[var(--text)]">{tournamentName}</h2>
-          <p className="mt-2 text-sm text-[var(--muted)]">
-            Tournament price <span className="font-mono text-[var(--text)]">{tournamentPrice}</span>
+      {/* Header with gradient background */}
+      <div className="relative flex flex-col gap-4 border-b border-[var(--border)] pb-5 sm:flex-row sm:items-start sm:justify-between">
+        {/* Background gradient effect */}
+        <div className="absolute -left-4 -top-4 h-32 w-32 rounded-full bg-[var(--primary)]/5 blur-3xl" />
+        
+        <div className="relative z-10">
+          <div className="flex items-center gap-2">
+            <Trophy size={16} className="text-[var(--primary)]" />
+            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--subtle)]">
+              Live Arena Snapshot
+            </p>
+          </div>
+          <h2 className="mt-3 text-xl font-bold text-[var(--text)]">{tournamentName}</h2>
+          <p className="mt-2 flex items-center gap-2 text-sm text-[var(--muted)]">
+            <CurrencyCircleDollar size={14} className="text-[var(--primary)]" />
+            Tournament price <span className="font-mono font-semibold text-[var(--text)]">{tournamentPrice}</span>
           </p>
         </div>
-        <span className={cn("inline-flex w-fit items-center rounded-full border px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.14em]", getStatusStyles(statusKind))}>
+        
+        <span className={cn(
+          "relative z-10 inline-flex w-fit items-center gap-2 rounded-full border px-4 py-1.5 text-[11px] font-bold uppercase tracking-[0.14em] transition-all",
+          getStatusStyles(statusKind)
+        )}>
+          {getStatusIcon(statusKind)}
           {statusLabel}
         </span>
       </div>
 
+      {/* Metrics grid with icons */}
       <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
         {metrics.map((metric, index) => (
           <motion.div
@@ -60,19 +75,26 @@ export function LiveArenaSnapshot({
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: 0.06 * index, duration: 0.24 }}
-            className="rounded-[8px] border border-[var(--border-soft)] bg-[var(--sidebar)] p-4"
+            whileHover={{ scale: 1.02, y: -2 }}
+            className="group relative overflow-hidden rounded-xl border border-[var(--border-soft)] bg-gradient-to-br from-[var(--sidebar)] to-[var(--panel)] p-4 transition-all hover:border-[var(--primary)]/20 hover:shadow-lg hover:shadow-[var(--primary)]/5"
           >
-            <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--subtle)]">
-              {metric.label}
-            </p>
-            <p
-              className={cn(
-                "mt-3 text-base font-semibold sm:text-lg",
-                metric.tone === "positive" ? "text-[var(--long)]" : "text-[var(--text)]",
-              )}
-            >
-              {metric.value}
-            </p>
+            {/* Subtle gradient overlay on hover */}
+            <div className="absolute inset-0 bg-gradient-to-br from-[var(--primary)]/5 to-transparent opacity-0 transition-opacity group-hover:opacity-100" />
+            
+            <div className="relative z-10">
+              <p className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--subtle)]">
+                {getMetricIcon(metric.label)}
+                {metric.label}
+              </p>
+              <p
+                className={cn(
+                  "mt-3 text-base font-bold sm:text-lg",
+                  metric.tone === "positive" ? "text-[var(--long)]" : "text-[var(--text)]",
+                )}
+              >
+                {metric.value}
+              </p>
+            </div>
           </motion.div>
         ))}
       </div>
@@ -82,16 +104,33 @@ export function LiveArenaSnapshot({
 
 function getStatusStyles(kind: SnapshotStatusKind) {
   if (kind === "live") {
-    return "border-[rgba(36,201,139,0.28)] bg-[rgba(36,201,139,0.12)] text-[var(--long)]";
+    return "border-[var(--long)]/30 bg-[var(--long)]/10 text-[var(--long)] shadow-lg shadow-[var(--long)]/20";
   }
 
   if (kind === "soon") {
-    return "border-[rgba(59,130,246,0.18)] bg-[rgba(59,130,246,0.12)] text-[#60A5FA]";
+    return "border-[#60A5FA]/30 bg-[#60A5FA]/10 text-[#60A5FA]";
   }
 
   if (kind === "claim") {
-    return "border-[rgba(244,201,93,0.24)] bg-[rgba(244,201,93,0.12)] text-[var(--warning)]";
+    return "border-[var(--warning)]/30 bg-[var(--warning)]/10 text-[var(--warning)]";
   }
 
-  return "border-[var(--border-soft)] bg-[var(--panel-soft)] text-[var(--muted)]";
+  return "border-[var(--border)] bg-[var(--panel-soft)] text-[var(--muted)]";
+}
+
+function getStatusIcon(kind: SnapshotStatusKind) {
+  if (kind === "live") return <Timer size={12} className="animate-pulse" />;
+  if (kind === "soon") return <Clock size={12} />;
+  if (kind === "claim") return <CurrencyCircleDollar size={12} />;
+  if (kind === "settled" || kind === "settling") return <CheckCircle size={12} />;
+  return <Star size={12} />;
+}
+
+function getMetricIcon(label: string) {
+  if (label.includes("BTC")) return <ChartLine size={12} className="text-[var(--primary)]" />;
+  if (label.includes("Players")) return <Users size={12} className="text-[var(--primary)]" />;
+  if (label.includes("Prize")) return <Trophy size={12} className="text-[var(--warning)]" />;
+  if (label.includes("Time")) return <Clock size={12} className="text-[var(--primary)]" />;
+  if (label.includes("status")) return <Star size={12} className="text-[var(--subtle)]" />;
+  return null;
 }
