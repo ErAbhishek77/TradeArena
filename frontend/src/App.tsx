@@ -807,6 +807,48 @@ export function App() {
     selectedTournament?.tournament_id,
   ]);
 
+  // Auto-close positions just before tournament ends
+  useEffect(() => {
+    if (
+      !selectedTournament ||
+      !participant?.position?.is_open ||
+      !account ||
+      !signer ||
+      getTournamentLifecycleState(selectedTournament, now) !== "Live"
+    ) {
+      return;
+    }
+
+    const endTime = selectedTournament.end_time;
+    const timeBeforeClose = 5_000; // Close 5 seconds before tournament ends
+    const timeUntilEnd = endTime - now;
+
+    if (timeUntilEnd <= 0) {
+      // Tournament already ended
+      return;
+    }
+
+    if (timeUntilEnd <= timeBeforeClose) {
+      // Close immediately
+      closePositionMutation.mutate();
+      return;
+    }
+
+    // Schedule close for just before tournament ends
+    const timeout = setTimeout(() => {
+      closePositionMutation.mutate();
+    }, timeUntilEnd - timeBeforeClose);
+
+    return () => clearTimeout(timeout);
+  }, [
+    selectedTournament,
+    participant?.position?.is_open,
+    account,
+    signer,
+    now,
+    closePositionMutation,
+  ]);
+
   const openTournament = (tournamentId: string) => {
     setSelectedTournamentId(tournamentId);
     setRoute({ page: "trade", tournamentId });
