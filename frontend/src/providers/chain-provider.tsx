@@ -325,6 +325,58 @@ export function ChainProvider({ children }: { children: React.ReactNode }) {
     return available;
   }, []);
 
+  // Initialize wallet discovery and auto-reconnect on mount
+  useEffect(() => {
+    let cancelled = false;
+
+    async function initializeWallet() {
+      try {
+        setWalletStatus("loading");
+        const available = await listWallets();
+        if (cancelled) return;
+        
+        setWallets(available);
+
+        if (available.length === 0) {
+          setWalletStatus("unavailable");
+          return;
+        }
+
+        // Try to auto-reconnect to previously connected wallet
+        const storedSource = localStorage.getItem(STORAGE_SOURCE);
+        if (storedSource && available.includes(storedSource)) {
+          try {
+            const enabled = await enableWallet(storedSource);
+            if (cancelled) return;
+            
+            if (enabled.accounts.length > 0) {
+              const storedAddr = localStorage.getItem(STORAGE_ADDR);
+              applyWallet(enabled, storedAddr);
+              return;
+            }
+          } catch {
+            // Auto-reconnect failed, continue to disconnected state
+          }
+        }
+
+        setWalletStatus("disconnected");
+        setWalletError(null);
+      } catch (err) {
+        if (!cancelled) {
+          setWalletError(
+            err instanceof Error ? err.message : "Failed to initialize wallet."
+          );
+          setWalletStatus("unavailable");
+        }
+      }
+    }
+
+    initializeWallet();
+    return () => {
+      cancelled = true;
+    };
+  }, [applyWallet]);
+
   const value = useMemo<ChainContextValue>(
     () => ({
       api,
