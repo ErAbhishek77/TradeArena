@@ -16,6 +16,7 @@ const statusColors = {
 
 export function TournamentRow({
   tournament,
+  joined = false,
   statusLabel,
   statusKind,
   entryFee,
@@ -32,6 +33,7 @@ export function TournamentRow({
   active,
 }: {
   tournament: TournamentView;
+  joined?: boolean;
   statusLabel: string;
   statusKind: "live" | "soon" | "ended" | "settled" | "settling" | "claim";
   entryFee: string;
@@ -69,6 +71,11 @@ export function TournamentRow({
           )}>
             {statusLabel}
           </span>
+          {joined ? (
+            <span className="inline-flex items-center rounded-md border border-[var(--primary)]/25 bg-[var(--primary)]/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--primary)]">
+              You&apos;re in
+            </span>
+          ) : null}
         </div>
         <div className="mt-1.5 flex items-center gap-2 text-xs text-[var(--muted)]">
           <CalendarCheck size={12} />

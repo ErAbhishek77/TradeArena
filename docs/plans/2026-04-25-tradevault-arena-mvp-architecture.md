@@ -1,7 +1,7 @@
 # Architecture Note
 
 ## Summary
-TradeVault Arena is a single-program, single-service Sails MVP. The program owns all state in a `RefCell`, and the service exposes admin routes, player routes, and read-only leaderboard queries. Prize pool value is stored in the program account through join payments and paid out during settlement.
+Trade Arena is a single-program, single-service Sails MVP. The program owns all state in a `RefCell`, and the service exposes admin routes, player routes, and read-only leaderboard queries. Prize pool value is stored in the program account through join payments and paid out during settlement.
 
 ## Program And Service Boundaries
 - `Program` constructor stores the admin and initial mock BTC price.

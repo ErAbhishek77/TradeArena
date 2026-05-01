@@ -1,6 +1,6 @@
 import { encodeAddress, decodeAddress } from "@polkadot/util-crypto";
 
-const APP_NAME = "TradeVault Arena";
+const APP_NAME = "Trade Arena";
 const POLL_INTERVAL_MS = 200;
 const POLL_MAX_ATTEMPTS = 15; // 3 seconds total
 const VARA_SS58_PREFIX = 137;

@@ -1,4 +1,4 @@
-# TradeVault Arena Deployment Guide
+# Trade Arena Deployment Guide
 
 This guide deploys the MVP to Vara testnet and connects the frontend to the live program.
 
@@ -65,7 +65,7 @@ You can also use the Gear IDEA portal for testnet funding if needed.
 
 ## 3. Upload And Initialize The Program
 
-TradeVault Arena's constructor is:
+Trade Arena's constructor is:
 
 - `Create(initial_btc_price: u128)`
 

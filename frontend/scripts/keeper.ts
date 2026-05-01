@@ -23,6 +23,9 @@ type KeeperTickSummary = {
   tournament_settled: boolean;
 };
 
+const AUTO_CLOSE_BEFORE_END_MS = 5_000;
+const SETTLEMENT_DELAY_MS = 120_000;
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const FRONTEND_DIR = resolve(__dirname, "..");
 const IDL_PATH = resolve(FRONTEND_DIR, "src/assets/tradevault_arena_client.idl");
@@ -32,17 +35,13 @@ const endpoint = process.env.VARA_WSS ?? "wss://testnet.vara.network";
 const programId = process.env.PROGRAM_ID?.trim() || PROGRAM_ID;
 const keeperSuri = process.env.KEEPER_SURI?.trim();
 const intervalMs = Number(process.env.INTERVAL_MS ?? "15000");
-const tournamentIds = (process.env.TOURNAMENT_IDS ?? "")
+const configuredTournamentIds = (process.env.TOURNAMENT_IDS ?? "")
   .split(",")
   .map((value) => value.trim())
   .filter(Boolean);
 
 if (!keeperSuri) {
   throw new Error("KEEPER_SURI is required.");
-}
-
-if (!tournamentIds.length) {
-  throw new Error("TOURNAMENT_IDS must contain at least one tournament id.");
 }
 
 const idlRaw = readFileSync(IDL_PATH, "utf8");
@@ -124,6 +123,10 @@ async function fetchTournament(service: any, tournamentId: string): Promise<Tour
   return service.queries.Tournament(BigInt(tournamentId)).call();
 }
 
+async function fetchTournaments(service: any): Promise<TournamentView[]> {
+  return service.queries.Tournaments().call();
+}
+
 async function runKeeperTick(service: any, keyring: any, tournamentId: string, price: number) {
   const roundedPrice = BigInt(Math.floor(price * 100));
   const tx = service.functions.KeeperTick(BigInt(tournamentId), roundedPrice);
@@ -133,13 +136,50 @@ async function runKeeperTick(service: any, keyring: any, tournamentId: string, p
   return (await result.response()) as KeeperTickSummary;
 }
 
+async function runProcessTournament(service: any, keyring: any, tournamentId: string) {
+  const tx = service.functions.ProcessTournament(BigInt(tournamentId));
+  tx.withAccount(keyring);
+  await tx.calculateGas();
+  const result = await tx.signAndSend();
+  return (await result.response()) as KeeperTickSummary;
+}
+
+function tradingCutoffTime(tournament: TournamentView): number {
+  return normalizeTimestampMs(tournament.end_time) - AUTO_CLOSE_BEFORE_END_MS;
+}
+
+function settlementReadyTime(tournament: TournamentView): number {
+  return normalizeTimestampMs(tournament.end_time) + SETTLEMENT_DELAY_MS;
+}
+
+function shouldManageTournament(tournament: TournamentView, now: number): boolean {
+  const displayStatus = getDisplayStatus(tournament, now);
+  if (displayStatus === "Upcoming" && now < tradingCutoffTime(tournament)) {
+    return false;
+  }
+  return tournament.status !== "Settled";
+}
+
+async function listManagedTournaments(service: any): Promise<TournamentView[]> {
+  const tournaments = await fetchTournaments(service);
+  const selectedIds = configuredTournamentIds.length
+    ? new Set(configuredTournamentIds)
+    : null;
+
+  return tournaments.filter((tournament) =>
+    selectedIds ? selectedIds.has(tournament.tournament_id) : true,
+  );
+}
+
 async function main() {
   connectBinanceTicker();
   const { api, keyring, service } = await createService();
   console.log(`[keeper] keeper address ${keyring.address}`);
   console.log(`[keeper] endpoint ${endpoint}`);
   console.log(`[keeper] program ${programId}`);
-  console.log(`[keeper] tournaments ${tournamentIds.join(", ")}`);
+  console.log(
+    `[keeper] tournaments ${configuredTournamentIds.length ? configuredTournamentIds.join(", ") : "auto-discovery"}`,
+  );
 
   const tick = async () => {
     const latestPrice = latestPriceState.value;
@@ -148,20 +188,46 @@ async function main() {
       return;
     }
 
-    for (const tournamentId of tournamentIds) {
+    const tournaments = await listManagedTournaments(service);
+    const now = Date.now();
+
+    for (const tournament of tournaments) {
+      const tournamentId = tournament.tournament_id;
       if (inFlight.has(tournamentId)) continue;
+      if (!shouldManageTournament(tournament, now)) continue;
       inFlight.add(tournamentId);
 
       try {
-        const tournament = await fetchTournament(service, tournamentId);
-        const displayStatus = getDisplayStatus(tournament);
-        if (displayStatus === "Upcoming" || tournament.status === "Settled") {
+        const refreshedTournament = await fetchTournament(service, tournamentId);
+        const refreshedNow = Date.now();
+        const cutoffAt = tradingCutoffTime(refreshedTournament);
+        const settleAt = settlementReadyTime(refreshedTournament);
+        const displayStatus = getDisplayStatus(refreshedTournament, refreshedNow);
+
+        if (refreshedTournament.status === "Settled") {
           continue;
         }
 
-        const summary = await runKeeperTick(service, keyring, tournamentId, latestPrice);
+        if (displayStatus === "Upcoming" && refreshedNow < cutoffAt) {
+          continue;
+        }
+
+        if (
+          refreshedTournament.status === "Ended" &&
+          refreshedNow < settleAt
+        ) {
+          console.log(
+            `[keeper] tournament=${tournamentId} waiting for settlement window (${Math.ceil((settleAt - refreshedNow) / 1000)}s left)`,
+          );
+          continue;
+        }
+
+        const summary =
+          refreshedTournament.status === "Ended"
+            ? await runProcessTournament(service, keyring, tournamentId)
+            : await runKeeperTick(service, keyring, tournamentId, latestPrice);
         console.log(
-          `[keeper] tournament=${tournamentId} price=${latestPrice.toFixed(2)} closed=${summary.positions_closed} ended=${summary.tournament_ended} settled=${summary.tournament_settled}`,
+          `[keeper] tournament=${tournamentId} status=${refreshedTournament.status} price=${latestPrice.toFixed(2)} closed=${summary.positions_closed} ended=${summary.tournament_ended} settled=${summary.tournament_settled}`,
         );
       } catch (error) {
         console.error(`[keeper] tournament=${tournamentId} failed`, error);

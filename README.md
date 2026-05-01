@@ -1,6 +1,6 @@
-# TradeVault Arena
+# Trade Arena
 
-TradeVault Arena is an MVP Vara dApp for synthetic trading tournaments. An admin creates a time-bound BTC/USD tournament, players pay the same entry fee, receive the same virtual starting balance, trade one mock pair with long or short positions, and finish ranked by percentage return. After the tournament ends, the top 3 wallets split the prize pool 60/30/10.
+Trade Arena is an MVP Vara dApp for synthetic trading tournaments. An admin creates a time-bound BTC/USD tournament, players pay the same entry fee, receive the same virtual starting balance, trade one mock pair with long or short positions, and finish ranked by percentage return. After the tournament ends, the top 3 wallets split the prize pool 60/30/10.
 
 The project is intentionally narrow:
 
@@ -117,7 +117,7 @@ cd frontend
 npm install
 ```
 
-The project already includes a local `.env` pointing at the deployed TradeVault Arena testnet program. To recreate it manually:
+The project already includes a local `.env` pointing at the deployed Trade Arena testnet program. To recreate it manually:
 
 ```bash
 cp .env.example .env

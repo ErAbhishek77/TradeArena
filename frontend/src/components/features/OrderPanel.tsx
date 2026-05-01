@@ -73,7 +73,6 @@ export function OrderPanel({
       animate={{ opacity: 1, y: 0 }}
       className="overflow-hidden rounded-2xl border border-[var(--border-soft)] bg-[var(--panel)] shadow-xl"
     >
-      {/* Header */}
       <div className="border-b border-[var(--border)] bg-gradient-to-r from-[var(--panel)] to-[var(--sidebar)]/50 px-5 py-4">
         <div className="flex items-center gap-2">
           <div className={cn(
@@ -88,10 +87,10 @@ export function OrderPanel({
           </div>
           <div>
             <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--label)]">
-              Order
+              Trade Setup
             </p>
             <p className="mt-0.5 text-lg font-bold text-[var(--text)]">
-              {tournamentName ?? "Tournament Order"}
+              {tournamentName ?? "Tournament trade"}
             </p>
           </div>
         </div>
@@ -114,22 +113,29 @@ export function OrderPanel({
       </div>
 
       <div className="space-y-5 p-5">
-        {/* Direction Selector */}
+        <div className="space-y-2">
+          <p className="text-sm font-semibold text-[var(--text)]">1. Choose your BTC view</p>
+          <p className="text-sm text-[var(--muted)]">
+            Pick whether you think the BTC price will go up or down.
+          </p>
+        </div>
         <SegmentedControl
           value={direction}
           onChange={(value) => onDirectionChange(value as "Long" | "Short")}
           disabled={hasOpenPosition || actionDisabled}
           options={[
-            { label: "LONG", value: "Long", tone: "positive" },
-            { label: "SHORT", value: "Short", tone: "danger" },
+            { label: "BTC goes up", value: "Long", tone: "positive" },
+            { label: "BTC goes down", value: "Short", tone: "danger" },
           ]}
         />
 
-        {/* Size Input */}
         <label className="block">
-          <span className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--label)]">
+          <span className="text-sm font-semibold text-[var(--text)]">
+            2. Choose practice amount
+          </span>
+          <span className="mt-1 flex items-center gap-1.5 text-[11px] text-[var(--muted)]">
             <CurrencyCircleDollar size={12} />
-            Size
+            This uses tournament funds, not real money.
           </span>
           <div className="mt-2 flex min-h-[48px] items-center rounded-xl border border-[var(--border-soft)] bg-[var(--sidebar)] px-4 transition-all focus-within:border-[var(--primary)] focus-within:ring-2 focus-within:ring-[var(--primary)]/20">
             <input
@@ -139,18 +145,18 @@ export function OrderPanel({
               className="w-full bg-transparent text-[15px] font-semibold text-[var(--text)] outline-none placeholder:text-[var(--muted)]"
               placeholder="100"
             />
-            <span className="text-[12px] font-medium text-[var(--label)]">USDT</span>
+            <span className="text-[12px] font-medium text-[var(--label)]">practice USDT</span>
           </div>
         </label>
 
-        {/* Order Info */}
         <div className="space-y-2 rounded-xl border border-[var(--border-soft)] bg-gradient-to-br from-[var(--sidebar)] to-[var(--panel-soft)] p-4">
-          <InfoRow label="Available" value={availableBalance} icon={<CurrencyCircleDollar size={12} />} />
-          <InfoRow label="Tournament Price" value={entryPrice} icon={<TrendUp size={12} />} />
-          <InfoRow label="Live BTC Price" value={currentPrice} icon={<TrendDown size={12} />} />
+          <p className="text-sm font-semibold text-[var(--text)]">Before you confirm</p>
+          <InfoRow label="Practice balance" value={availableBalance} icon={<CurrencyCircleDollar size={12} />} />
+          <InfoRow label="Game price" value={entryPrice} icon={<TrendUp size={12} />} />
+          <InfoRow label="Live BTC price" value={currentPrice} icon={<TrendDown size={12} />} />
           <div className="my-1 h-px bg-[var(--border)]" />
           <InfoRow
-            label="Live Preview P/L"
+            label="Preview result"
             value={
               <motion.span
                 key={estimatedPnl.value}
@@ -170,7 +176,6 @@ export function OrderPanel({
           />
         </div>
 
-        {/* Risk Controls */}
         <details
           className="rounded-xl border border-[var(--border-soft)] bg-[var(--sidebar)] p-4 transition-colors"
           open={riskConfigured}
@@ -180,10 +185,10 @@ export function OrderPanel({
               <ShieldCheck size={16} className="text-[var(--primary)]" />
               <div>
                 <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--label)]">
-                  Risk Controls
+                  Advanced Options
                 </p>
                 <p className="mt-1 text-[12px] text-[var(--muted)]">
-                  Optional Stop Loss and Take Profit levels.
+                  Optional auto-close prices if you want extra control.
                 </p>
               </div>
             </div>
@@ -193,7 +198,7 @@ export function OrderPanel({
                 ? "bg-[var(--primary)]/15 text-[var(--primary)]" 
                 : "bg-[var(--border)] text-[var(--muted)]"
             )}>
-              {riskConfigured ? "Configured" : "Optional"}
+              {riskConfigured ? "On" : "Optional"}
             </span>
           </summary>
           <div className="mt-5 grid gap-4 sm:grid-cols-2">
@@ -250,7 +255,7 @@ export function OrderPanel({
             <div className="flex items-center gap-2">
               <ShieldCheck size={16} className="text-[var(--primary)]" />
               <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--primary)]">
-                Open Position
+                Current Trade
               </p>
             </div>
             <div className="mt-4 grid gap-3 sm:grid-cols-3">
@@ -261,7 +266,6 @@ export function OrderPanel({
           </motion.div>
         ) : null}
 
-        {/* Warning & Helper */}
         {warning && (
           <motion.div
             initial={{ opacity: 0, x: -10 }}
@@ -279,7 +283,6 @@ export function OrderPanel({
           </div>
         )}
 
-        {/* Action Buttons */}
         {!activePositionSummary ? (
           <Button variant={actionVariant} fullWidth onClick={onAction} disabled={actionDisabled} className="h-12 text-sm font-bold">
             {actionLabel}

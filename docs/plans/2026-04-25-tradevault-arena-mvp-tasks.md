@@ -9,7 +9,7 @@ Ship a demo-ready Vara MVP for a synthetic trading tournament with contract, tes
 - Contract builds before frontend work starts
 
 ## Ordered Tasks
-1. Replace the template contract with TradeVault Arena state, DTOs, events, errors, and public routes.
+1. Replace the template contract with Trade Arena state, DTOs, events, errors, and public routes.
 2. Make `cargo build` pass and confirm the IDL is generated from the standard build pipeline.
 3. Add `gtest` coverage for tournament creation, joining, trading flow, leaderboard ranking, and settlement payouts.
 4. Scaffold or build a React frontend that consumes the generated IDL and supports wallet-bound writes plus read-only tournament views.

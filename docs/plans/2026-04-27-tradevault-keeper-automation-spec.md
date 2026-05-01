@@ -2,7 +2,7 @@
 
 ## Goal
 
-Upgrade TradeVault Arena from frontend-only SL/TP alerts to keeper-driven on-chain automation.
+Upgrade Trade Arena from frontend-only SL/TP alerts to keeper-driven on-chain automation.
 
 ## Scope
 

@@ -2,7 +2,7 @@
 
 ## Summary of Changes
 
-The TradeVault Arena smart contract has been upgraded to support multiple administrators instead of a single admin. This document details all technical changes made.
+The Trade Arena smart contract has been upgraded to support multiple administrators instead of a single admin. This document details all technical changes made.
 
 ---
 

@@ -100,16 +100,16 @@ export function HomePage({
         <div className="grid gap-6 lg:grid-cols-[minmax(0,1.2fr)_320px] lg:items-end">
           <div>
             <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-[var(--primary)]">
-              BTC Paper Trading Arena
+              Simple BTC Tournament Game
             </p>
             <h1 className="mt-4 max-w-3xl text-4xl font-semibold leading-tight text-[var(--text)] sm:text-5xl">
-              Compete in BTC Trading Tournaments
+              Pick a tournament, predict BTC, and track your score
             </h1>
             <p className="mt-4 max-w-2xl text-base leading-7 text-[var(--muted)] sm:text-lg">
-              Trade with virtual balance. Win real VARA from an on-chain prize pool.
+              Start with practice money, follow the BTC price, and compete for real rewards.
             </p>
             <p className="mt-3 text-sm font-medium text-[var(--subtle)]">
-              Paper trading experience. Real on-chain rewards.
+              No real trading. Your tournament score updates live.
             </p>
 
             <div className="mt-6 flex flex-col gap-3 sm:flex-row">
@@ -141,17 +141,9 @@ export function HomePage({
         </div>
       </motion.section>
 
-      <div className="grid gap-6 xl:grid-cols-[minmax(0,1.15fr)_360px]">
-        <LiveArenaSnapshot
-          tournamentName={snapshotTournamentName}
-          tournamentPrice={snapshotTournamentPrice}
-          btcPrice={snapshotBtcPrice}
-          playersJoined={snapshotPlayersJoined}
-          prizePool={snapshotPrizePool}
-          timeLeft={snapshotTimeLeft}
-          statusLabel={snapshotStatusLabel}
-          statusKind={snapshotStatusKind}
-        />
+      <QuickActions actions={quickActions} />
+
+      <div className="grid gap-6 xl:grid-cols-[360px_minmax(0,1fr)]">
         <UserStatusCard
           connected={userStatusConnected}
           balance={userStatusBalance}
@@ -163,9 +155,17 @@ export function HomePage({
           actionLabel={userStatusActionLabel}
           onAction={onUserStatusAction}
         />
+        <LiveArenaSnapshot
+          tournamentName={snapshotTournamentName}
+          tournamentPrice={snapshotTournamentPrice}
+          btcPrice={snapshotBtcPrice}
+          playersJoined={snapshotPlayersJoined}
+          prizePool={snapshotPrizePool}
+          timeLeft={snapshotTimeLeft}
+          statusLabel={snapshotStatusLabel}
+          statusKind={snapshotStatusKind}
+        />
       </div>
-
-      <QuickActions actions={quickActions} />
 
       <motion.section
         variants={{
@@ -177,7 +177,7 @@ export function HomePage({
         <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--subtle)]">
           How It Works
         </p>
-        <h2 className="mt-2 text-xl font-semibold text-[var(--text)]">Join, trade, and climb the board</h2>
+        <h2 className="mt-2 text-xl font-semibold text-[var(--text)]">Three simple steps</h2>
         <div className="mt-5">
           <StepCards />
         </div>
@@ -242,7 +242,7 @@ function MarketBar({
             className="h-2.5 w-2.5 rounded-full bg-[var(--long)] shadow-[0_0_14px_rgba(36,201,139,0.7)]"
           />
           <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--subtle)]">
-            Live Market
+            Live BTC Price
           </span>
         </div>
         <div className="rounded-full border border-[var(--border-soft)] bg-[var(--panel)] px-3 py-1.5">

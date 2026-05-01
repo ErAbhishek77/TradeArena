@@ -1,7 +1,7 @@
 # Feature Spec
 
 ## Problem
-TradeVault Arena needs a simple on-chain tournament contract where users pay an entry fee, receive equal synthetic capital, place mock BTC/USD trades, and compete on return percentage for a prize pool.
+Trade Arena needs a simple on-chain tournament contract where users pay an entry fee, receive equal synthetic capital, place mock BTC/USD trades, and compete on return percentage for a prize pool.
 
 ## User Goal
 - Admin can create and operate tournaments.

@@ -1,6 +1,6 @@
 import { motion } from "framer-motion";
 import { cn } from "@/lib/utils";
-import { Trophy, CurrencyCircleDollar, Users, Clock, Star, ArrowRight, ChartLine, WarningCircle, CheckCircle, Timer } from "@phosphor-icons/react";
+import { Trophy, CurrencyCircleDollar, Users, Clock, Star, ChartLine, CheckCircle, Timer } from "@phosphor-icons/react";
 
 type SnapshotStatusKind = "live" | "soon" | "ended" | "settled" | "settling" | "claim";
 
@@ -24,11 +24,10 @@ export function LiveArenaSnapshot({
   statusKind: SnapshotStatusKind;
 }) {
   const metrics = [
-    { label: "BTC Price", value: btcPrice, tone: "default" as const },
-    { label: "Players joined", value: playersJoined, tone: "default" as const },
+    { label: "Live BTC price", value: btcPrice, tone: "default" as const },
+    { label: "Players", value: playersJoined, tone: "default" as const },
     { label: "Prize pool", value: prizePool, tone: "positive" as const },
     { label: "Time left", value: timeLeft, tone: "default" as const },
-    { label: "Tournament status", value: statusLabel, tone: statusKind === "live" ? ("positive" as const) : ("default" as const) },
   ];
 
   return (
@@ -39,22 +38,18 @@ export function LiveArenaSnapshot({
       }}
       className="product-card overflow-hidden rounded-2xl p-5 sm:p-6"
     >
-      {/* Header with gradient background */}
       <div className="relative flex flex-col gap-4 border-b border-[var(--border)] pb-5 sm:flex-row sm:items-start sm:justify-between">
-        {/* Background gradient effect */}
-        <div className="absolute -left-4 -top-4 h-32 w-32 rounded-full bg-[var(--primary)]/5 blur-3xl" />
-        
         <div className="relative z-10">
           <div className="flex items-center gap-2">
             <Trophy size={16} className="text-[var(--primary)]" />
             <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--subtle)]">
-              Live Arena Snapshot
+              Current Tournament
             </p>
           </div>
           <h2 className="mt-3 text-xl font-bold text-[var(--text)]">{tournamentName}</h2>
           <p className="mt-2 flex items-center gap-2 text-sm text-[var(--muted)]">
             <CurrencyCircleDollar size={14} className="text-[var(--primary)]" />
-            Tournament price <span className="font-mono font-semibold text-[var(--text)]">{tournamentPrice}</span>
+            Game price <span className="font-mono font-semibold text-[var(--text)]">{tournamentPrice}</span>
           </p>
         </div>
         
@@ -67,20 +62,16 @@ export function LiveArenaSnapshot({
         </span>
       </div>
 
-      {/* Metrics grid with icons */}
-      <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+      <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         {metrics.map((metric, index) => (
           <motion.div
             key={metric.label}
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: 0.06 * index, duration: 0.24 }}
-            whileHover={{ scale: 1.02, y: -2 }}
-            className="group relative overflow-hidden rounded-xl border border-[var(--border-soft)] bg-gradient-to-br from-[var(--sidebar)] to-[var(--panel)] p-4 transition-all hover:border-[var(--primary)]/20 hover:shadow-lg hover:shadow-[var(--primary)]/5"
+            whileHover={{ y: -2 }}
+            className="group relative overflow-hidden rounded-xl border border-[var(--border-soft)] bg-[var(--sidebar)] p-4 transition-all hover:border-[var(--primary)]/20"
           >
-            {/* Subtle gradient overlay on hover */}
-            <div className="absolute inset-0 bg-gradient-to-br from-[var(--primary)]/5 to-transparent opacity-0 transition-opacity group-hover:opacity-100" />
-            
             <div className="relative z-10">
               <p className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--subtle)]">
                 {getMetricIcon(metric.label)}

@@ -2,7 +2,7 @@
 
 ## Overview
 
-This guide covers upgrading the TradeVault Arena smart contract from single-admin to multi-admin architecture and redeploying it on Vara network.
+This guide covers upgrading the Trade Arena smart contract from single-admin to multi-admin architecture and redeploying it on Vara network.
 
 ---
 
@@ -117,7 +117,7 @@ npm install -g @vara-js/cli
 # Deploy contract
 vara contract deploy \
   --wasm ./target/wasm32-unknown-unknown/release/tradevault_arena.wasm \
-  --name "TradeVault Arena Multi-Admin" \
+  --name "Trade Arena Multi-Admin" \
   --network testnet
 ```
 

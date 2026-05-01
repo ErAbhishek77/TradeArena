@@ -12,6 +12,8 @@ type TournamentId = u64;
 const WINNER_SHARES: [u128; 3] = [60, 30, 10];
 const RETURN_SCALE_BPS: i128 = 10_000;
 const PAYOUT_MESSAGE: &[u8] = b"tradevault-payout";
+const AUTO_CLOSE_BEFORE_END_MS: u64 = 5_000;
+const SETTLEMENT_DELAY_MS: u64 = 120_000;
 
 #[derive(Clone, Debug, PartialEq, Eq, Encode, Decode, TypeInfo)]
 #[codec(crate = sails_rs::scale_codec)]
@@ -59,6 +61,7 @@ pub enum ArenaError {
     TournamentAlreadyEnded,
     TournamentAlreadySettled,
     TournamentRequiresEnd,
+    SettlementDelayNotElapsed,
     TournamentFull,
     JoinWindowClosed,
     AlreadyJoined,
@@ -333,6 +336,16 @@ impl<'a> TradeVaultArenaService<'a> {
         }
     }
 
+    fn trading_cutoff_time(tournament: &Tournament) -> u64 {
+        tournament
+            .end_time
+            .saturating_sub(AUTO_CLOSE_BEFORE_END_MS)
+    }
+
+    fn settlement_ready_time(tournament: &Tournament) -> u64 {
+        tournament.end_time.saturating_add(SETTLEMENT_DELAY_MS)
+    }
+
     fn ranking_price(current_price: u128, tournament: &Tournament) -> u128 {
         tournament.final_btc_price.unwrap_or(current_price)
     }
@@ -600,6 +613,7 @@ impl<'a> TradeVaultArenaService<'a> {
             return Ok(Vec::new());
         }
 
+        let closing_window_started = now >= TradeVaultArenaService::trading_cutoff_time(tournament);
         let participants = tournament.participants.clone();
         let mut closed_positions = Vec::new();
         for participant in participants {
@@ -609,9 +623,13 @@ impl<'a> TradeVaultArenaService<'a> {
             let Some(position) = participant_state.position.clone() else {
                 continue;
             };
-            let Some(close_reason) =
+            let close_reason = if closing_window_started {
+                CloseReason::Manual
+            } else if let Some(reason) =
                 TradeVaultArenaService::close_reason_for_price(&position, current_price)
-            else {
+            {
+                reason
+            } else {
                 continue;
             };
 
@@ -647,6 +665,20 @@ impl<'a> TradeVaultArenaService<'a> {
             return Ok(false);
         }
 
+        let participants = tournament.participants.clone();
+        for participant in participants {
+            let Some(participant_state) = tournament.participant_states.get_mut(&participant) else {
+                continue;
+            };
+            if participant_state.position.is_some() {
+                let _ = TradeVaultArenaService::close_position_state(
+                    participant_state,
+                    current_price,
+                    CloseReason::Manual,
+                )?;
+            }
+        }
+
         tournament.status = TournamentStatus::Ended;
         tournament.final_btc_price = Some(current_price);
         Ok(true)
@@ -661,6 +693,9 @@ impl<'a> TradeVaultArenaService<'a> {
             return Ok(None);
         }
         if !matches!(tournament.status, TournamentStatus::Ended) {
+            return Ok(None);
+        }
+        if TradeVaultArenaService::now() < TradeVaultArenaService::settlement_ready_time(tournament) {
             return Ok(None);
         }
 
@@ -1012,7 +1047,7 @@ impl TradeVaultArenaService<'_> {
         if !matches!(tournament.status, TournamentStatus::Active) {
             return Err(ArenaError::TournamentNotActive);
         }
-        if now >= tournament.end_time {
+        if now >= TradeVaultArenaService::trading_cutoff_time(tournament) {
             return Err(ArenaError::TournamentNotActive);
         }
 
@@ -1183,6 +1218,9 @@ impl TradeVaultArenaService<'_> {
         }
         if !matches!(tournament.status, TournamentStatus::Ended) {
             return Err(ArenaError::TournamentRequiresEnd);
+        }
+        if TradeVaultArenaService::now() < TradeVaultArenaService::settlement_ready_time(tournament) {
+            return Err(ArenaError::SettlementDelayNotElapsed);
         }
         let settlement = TradeVaultArenaService::settle_tournament_state(
             tournament_id,

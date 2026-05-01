@@ -5,7 +5,7 @@ import {
   RocketLaunch,
 } from "@phosphor-icons/react";
 import { BarChart3, Home, LayoutDashboard, ShieldCheck, Trophy, WalletCards } from "lucide-react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
   CloseReason,
   CreateTournamentInput,
@@ -29,6 +29,7 @@ import { MarketHeader } from "@/components/features/MarketHeader";
 import { ClaimCard } from "@/components/features/ClaimCard";
 import { AdminOverviewPanel } from "@/components/features/AdminOverviewPanel";
 import { HomePage } from "@/components/features/HomePage";
+import { LeaderboardPanel } from "@/components/features/LeaderboardPanel";
 import { EmptyStatePanel } from "@/components/ui/EmptyStatePanel";
 import { ArenaCard } from "@/components/ui/arena-card";
 import { LiveRankCard } from "@/components/ui/live-rank-card";
@@ -300,6 +301,49 @@ export function App() {
   const participantErrorMessage = extractErrorMessage(participantQuery.error);
   const participantNotFound = participantErrorMessage.includes("ParticipantNotFound");
   const participant = participantNotFound ? null : participantQuery.data ?? null;
+  const tournamentMembershipQueries = useQueries({
+    queries:
+      isChainReady && hasProgramId && Boolean(account?.address)
+        ? tournaments.map((tournament) => ({
+            queryKey: [
+              "participant-membership",
+              network.endpoint,
+              programId,
+              tournament.tournament_id,
+              account?.address,
+            ],
+            queryFn: async () => {
+              try {
+                return await fetchParticipant(
+                  api!,
+                  programId,
+                  toBigIntValue(tournament.tournament_id),
+                  account!.address,
+                );
+              } catch {
+                return null;
+              }
+            },
+            retry: false,
+            staleTime: 10_000,
+          }))
+        : [],
+  });
+  const joinedTournamentIds = useMemo(() => {
+    const ids = new Set<string>();
+    tournamentMembershipQueries.forEach((query, index) => {
+      if (query.data?.tournament_id) {
+        ids.add(query.data.tournament_id);
+        return;
+      }
+
+      const tournament = tournaments[index];
+      if (query.data && tournament) {
+        ids.add(tournament.tournament_id);
+      }
+    });
+    return ids;
+  }, [tournamentMembershipQueries, tournaments]);
 
   const leaderboardQuery = useQuery({
     queryKey: ["leaderboard", network.endpoint, programId, selectedTournament?.tournament_id],
@@ -700,7 +744,7 @@ export function App() {
     selectedTournamentState === "Live"
       ? priceSyncPaused
         ? "Price syncing is catching up with Binance. New trades are paused until contract price drift falls below 5%."
-        : "Live price updates automatically. On-chain price is updated by keeper/admin."
+        : "Live price updates automatically. On-chain price and final close/settle timing are handled by the keeper."
       : "Tournament price is fixed once the tournament closes.";
   const marketSourceNotice = priceSyncPaused
     ? "Price syncing... trading temporarily paused"
@@ -805,48 +849,6 @@ export function App() {
     participant?.position?.is_open,
     programId,
     selectedTournament?.tournament_id,
-  ]);
-
-  // Auto-close positions just before tournament ends
-  useEffect(() => {
-    if (
-      !selectedTournament ||
-      !participant?.position?.is_open ||
-      !account ||
-      !signer ||
-      getTournamentLifecycleState(selectedTournament, now) !== "Live"
-    ) {
-      return;
-    }
-
-    const endTime = selectedTournament.end_time;
-    const timeBeforeClose = 5_000; // Close 5 seconds before tournament ends
-    const timeUntilEnd = endTime - now;
-
-    if (timeUntilEnd <= 0) {
-      // Tournament already ended
-      return;
-    }
-
-    if (timeUntilEnd <= timeBeforeClose) {
-      // Close immediately
-      closePositionMutation.mutate();
-      return;
-    }
-
-    // Schedule close for just before tournament ends
-    const timeout = setTimeout(() => {
-      closePositionMutation.mutate();
-    }, timeUntilEnd - timeBeforeClose);
-
-    return () => clearTimeout(timeout);
-  }, [
-    selectedTournament,
-    participant?.position?.is_open,
-    account,
-    signer,
-    now,
-    closePositionMutation,
   ]);
 
   const openTournament = (tournamentId: string) => {
@@ -976,7 +978,7 @@ export function App() {
 
   const pageTitle =
     route.page === "home"
-      ? "TradeVault Arena"
+      ? "Trade Arena"
       : route.page === "tournaments"
         ? "Tournaments"
       : route.page === "trade" || route.page === "tournament"
@@ -1337,6 +1339,87 @@ export function App() {
       needsSettlement: lifecycle === "Ended",
     };
   });
+  const keeperMonitorTournaments = tournaments.map((tournament) => {
+    const lifecycle = getTournamentLifecycleState(tournament, now);
+    const start = normalizeTimestampMs(tournament.start_time);
+    const end = normalizeTimestampMs(tournament.end_time);
+    const closeWindowStart = Math.max(start, end - 5_000);
+    const settlementReadyAt = end + 120_000;
+
+    if (lifecycle === "Settled" || lifecycle === "Claim Open") {
+      return {
+        tournament,
+        label: "Settled",
+        kind: "settled" as const,
+        detail: "Rewards are finalized.",
+      };
+    }
+
+    if (lifecycle === "Ended") {
+      const secondsLeft = Math.max(0, Math.ceil((settlementReadyAt - now) / 1000));
+      return now >= settlementReadyAt
+        ? {
+            tournament,
+            label: "Ready to settle",
+            kind: "claim" as const,
+            detail: "The 2 minute delay has passed. Keeper can finalize rewards now.",
+          }
+        : {
+            tournament,
+            label: "Waiting to settle",
+            kind: "ended" as const,
+            detail: `Settlement opens in ${secondsLeft}s.`,
+          };
+    }
+
+    if (lifecycle === "Live") {
+      return now >= closeWindowStart
+        ? {
+            tournament,
+            label: "Auto-close window",
+            kind: "warning" as const,
+            detail: "Open positions should be closing on keeper ticks now.",
+          }
+        : {
+            tournament,
+            label: "Watching live",
+            kind: "live" as const,
+            detail: "Keeper should keep syncing price and processing SL/TP.",
+          };
+    }
+
+    return {
+      tournament,
+      label: "Waiting to start",
+      kind: "soon" as const,
+      detail: "No keeper action needed yet.",
+    };
+  });
+  const keeperMonitorMetrics = [
+    {
+      label: "Watching",
+      value: String(keeperMonitorTournaments.filter((item) => item.kind === "live").length),
+      meta: "Live tournaments syncing prices",
+      tone: "positive" as const,
+    },
+    {
+      label: "Auto-Close",
+      value: String(keeperMonitorTournaments.filter((item) => item.kind === "warning").length),
+      meta: "Final 5-second close window",
+      tone: "warning" as const,
+    },
+    {
+      label: "Ready To Settle",
+      value: String(keeperMonitorTournaments.filter((item) => item.label === "Ready to settle").length),
+      meta: "Ended tournaments past +2 minutes",
+      tone: "warning" as const,
+    },
+    {
+      label: "Settled",
+      value: String(keeperMonitorTournaments.filter((item) => item.kind === "settled").length),
+      meta: "Rewards already finalized",
+    },
+  ];
 
   const vaultCards = participant
     ? [
@@ -1398,21 +1481,21 @@ export function App() {
     const state = getTournamentLifecycleState(tournament, now);
     return state === "Live" || state === "Upcoming";
   }).length;
-  const heroPrimaryLabel = hasJoinedTournament || hasOpenPosition ? "Continue Trading" : "View Tournaments";
+  const heroPrimaryLabel = hasJoinedTournament || hasOpenPosition ? "Continue My Game" : "Browse Tournaments";
   const heroPrimaryAction = hasJoinedTournament || hasOpenPosition
     ? () => setRoute(tradeRoute)
     : () => setRoute({ page: "tournaments" });
   const heroStats = [
     {
-      label: "Active tournaments",
+      label: "Games open now",
       value: activeTournamentCount ? String(activeTournamentCount) : "0",
     },
     {
-      label: "Total prize pool",
+      label: "Total rewards",
       value: totalPrizePoolValue > 0n ? formatPlanck(totalPrizePoolValue) : "Waiting for first pool",
     },
     {
-      label: "Real-time leaderboard",
+      label: "Live scoreboard",
       value: homeTournament
         ? leaderboardProjection.qualified.length
           ? `${leaderboardProjection.qualified.length} ranked now`
@@ -1421,17 +1504,17 @@ export function App() {
     },
   ];
   const userStatusHelper = !account
-    ? "Connect your wallet to track balance, rank, return %, and current vault value."
+    ? "Connect your wallet to join a game and track your score."
     : participant && homeTournament
       ? `You are competing in ${homeTournament.name}.`
       : homeTournament
-        ? `Join ${homeTournament.name} to start trading with virtual balance.`
-        : "Join the next arena to start trading with virtual balance.";
+        ? `Join ${homeTournament.name} to start with practice funds.`
+        : "Join the next arena to start with practice funds.";
   const userStatusActionLabel = !account
     ? "Connect Wallet"
     : hasJoinedTournament || hasOpenPosition
-      ? "Continue Trading"
-      : "Join Arena";
+      ? "Continue My Game"
+      : "Join a Game";
   const userStatusAction = !account
     ? handleConnectWallet
     : hasJoinedTournament || hasOpenPosition
@@ -1440,27 +1523,27 @@ export function App() {
   const quickActions: QuickActionItem[] = [
     {
       id: "join-arena",
-      title: "Join Arena",
-      description: "Browse live BTC tournaments and reserve a place before the timer starts.",
-      buttonLabel: "View Tournaments",
+      title: "Join a tournament",
+      description: "See the available games, entry fee, and when each one starts.",
+      buttonLabel: "Browse tournaments",
       onClick: () => setRoute({ page: "tournaments" }),
       icon: <LayoutDashboard size={18} />,
       variant: "primary",
     },
     {
       id: "open-trade",
-      title: "Open Trade",
-      description: "Jump into the trade terminal and manage your next BTC position.",
-      buttonLabel: "Open Trade",
+      title: "Make a BTC pick",
+      description: "Open your current game and choose whether BTC goes up or down.",
+      buttonLabel: "Open my game",
       onClick: () => setRoute(tradeRoute),
       icon: <BarChart3 size={18} />,
       variant: "secondary",
     },
     {
       id: "view-vault",
-      title: "View Vault",
-      description: "Check rewards, rank, return %, and your current tournament vault value.",
-      buttonLabel: "View Vault",
+      title: "Check score and rewards",
+      description: "Review your rank, current score, and any rewards ready to claim.",
+      buttonLabel: "View my progress",
       onClick: () => setRoute({ page: "vault" }),
       icon: <WalletCards size={18} />,
       variant: "secondary",
@@ -1475,6 +1558,7 @@ export function App() {
       const state = getTournamentLifecycleState(tournament, now);
       return {
         tournament,
+        joined: joinedTournamentIds.has(tournament.tournament_id),
         statusLabel: mapStatusLabel(state),
         statusKind: mapStatusKind(state),
         entryFee: formatPlanck(tournament.entry_fee),
@@ -1506,6 +1590,7 @@ export function App() {
         : null;
       return {
         tournament,
+        joined: joinedTournamentIds.has(tournament.tournament_id),
         statusLabel: mapStatusLabel(state),
         statusKind: mapStatusKind(state),
         entryFee: formatPlanck(tournament.entry_fee),
@@ -1731,6 +1816,7 @@ export function App() {
                         <FeatureTournamentRow
                           key={item.tournament.tournament_id}
                           tournament={item.tournament}
+                          joined={item.joined}
                           statusLabel={item.statusLabel}
                           statusKind={item.statusKind}
                           entryFee={item.entryFee}
@@ -1815,6 +1901,7 @@ export function App() {
                         <FeatureTournamentRow
                           key={`past-${item.tournament.tournament_id}`}
                           tournament={item.tournament}
+                          joined={item.joined}
                           statusLabel={item.statusLabel}
                           statusKind={item.statusKind}
                           entryFee={item.entryFee}
@@ -1876,23 +1963,6 @@ export function App() {
                     success: "Position closed.",
                   })}
 
-                  {!participant ? (
-                    <div className="flex">
-                      <Button
-                        variant="primary"
-                        onClick={() => handleJoinTournament(tradeViewTournament)}
-                        disabled={
-                          Boolean(getJoinReason(tradeViewTournament, now)) || joinMutation.isPending
-                        }
-                        title={
-                          getJoinReason(tradeViewTournament, now) ?? undefined
-                        }
-                      >
-                        Join Tournament
-                      </Button>
-                    </div>
-                  ) : null}
-
                   {selectedTournamentState === "Ended" ? (
                     <div className="rounded-[12px] border border-[var(--border-soft)] bg-[var(--panel)] p-4">
                       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -1909,160 +1979,176 @@ export function App() {
                     </div>
                   ) : null}
 
-                  <div className="grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1fr)_360px]">
+                  {!participant ? (
                     <div className="space-y-4">
-                      <MarketHeader
-                        title={tradeViewTournament.name}
-                        livePrice={livePriceLabel === "BTC --" ? "$0.00" : livePriceLabel}
-                        tournamentPrice={tournamentPriceLabel}
-                        syncStatus={syncStatusLabel}
-                        timeLeft={describeCountdown(tradeViewTournament.start_time, tradeViewTournament.end_time, now)}
-                        statusKind={selectedTournamentStatusKind}
-                        statusLabel={selectedTournamentStatusLabel}
-                        priceSourceLabel="Price source: Binance BTC/USDT"
-                        sourceNotice={marketSourceNotice}
-                      />
-                      <TradingChart
-                        livePrice={livePriceLabel === "BTC --" ? "$0.00" : livePriceLabel}
-                        liveChange={`${livePriceChange24h >= 0 ? "+" : ""}${livePriceChange24h.toFixed(2)}%`}
-                        tournamentPrice={tournamentPriceLabel}
-                        priceHistory={liveHistory}
-                        tournamentPriceValue={currentPriceValue}
-                        entryPriceValue={
-                          participant?.position?.is_open
-                            ? toBigIntValue(participant.position.entry_price)
-                            : null
-                        }
-                      />
-                      <div className="rounded-[12px] border border-[var(--border-soft)] bg-[var(--panel)] p-4">
-                        <details>
-                          <summary className="section-kicker cursor-pointer list-none select-none flex items-center justify-between">
-                            Trade History <span className="text-[var(--muted)] opacity-50">Expand ▼</span>
-                          </summary>
-                          <div className="mt-4">
-                            <TradeHistoryPanel history={tradeHistory} currentPrice={currentPriceValue} />
-                          </div>
-                        </details>
+                      <div className="rounded-[12px] border border-[var(--border-soft)] bg-[var(--panel)] p-5">
+                        <p className="section-kicker">Leaderboard Only</p>
+                        <p className="mt-2 text-sm text-[var(--muted)]">
+                          You are not participating in this tournament, so trading controls are hidden.
+                        </p>
                       </div>
-                    </div>
-                    
-                    <div className="space-y-4">
-                      <OrderPanel
-                        tournamentName={tradeViewTournament.name}
-                        timeLeft={describeCountdown(tradeViewTournament.start_time, tradeViewTournament.end_time, now)}
-                        prizePool={formatPlanck(tradeViewTournament.prize_pool)}
-                        direction={tradeDirection}
-                        onDirectionChange={setTradeDirection}
-                        size={tradeSize}
-                        onSizeChange={setTradeSize}
-                        availableBalance={participant ? toBigIntValue(participant.final_value).toLocaleString() : "Join to unlock"}
-                        entryPrice={tournamentPriceLabel}
-                        currentPrice={livePriceLabel === "BTC --" ? "$0.00" : livePriceLabel}
-                        estimatedPnl={{
-                          value: formatSignedUsd(estimatedTradeMetrics.pnl),
-                          tone:
-                            estimatedTradeMetrics.pnl > 0
-                              ? "positive"
-                              : estimatedTradeMetrics.pnl < 0
-                                ? "negative"
-                                : "default",
-                        }}
-                        actionLabel={tradeDirection === "Long" ? "Open Long" : "Open Short"}
-                        actionVariant={tradeDirection === "Long" ? "positive" : "danger"}
-                        onAction={handleOpenPosition}
-                        actionDisabled={Boolean(tradeDisabledReason) || openPositionMutation.isPending || Boolean(participant?.position?.is_open)}
-                        secondaryActionLabel={
-                          participant?.position?.is_open ? "Close Position" : undefined
-                        }
-                        onSecondaryAction={
-                          participant?.position?.is_open ? handleClosePosition : undefined
-                        }
-                        secondaryDisabled={closePositionMutation.isPending}
-                        activePositionSummary={
-                          participant?.position?.is_open
-                            ? {
-                                direction: participant.position.direction,
-                                size: `${toBigIntValue(participant.position.size).toLocaleString()} USDT`,
-                                entryPrice: formatChainUsdPrice(participant.position.entry_price),
-                              }
-                            : null
-                        }
-                        stopLossPrice={stopLossPrice}
-                        onStopLossChange={setStopLossPrice}
-                        takeProfitPrice={takeProfitPrice}
-                        onTakeProfitChange={setTakeProfitPrice}
-                        riskControlsHelper="Stop Loss and Take Profit are enforced by the tournament keeper."
-                        helper={tournamentPriceHelperText}
-                        warning={tradeFormError ?? tradeDisabledReason ?? undefined}
+                      <LeaderboardPanel
+                        podium={leaderboardPodium}
+                        rows={leaderboardRows}
+                        inactiveRows={leaderboardInactiveRows}
                       />
-                      
-                      <div className="rounded-[12px] border border-[var(--border-soft)] bg-[var(--panel)] p-4">
-                        <p className="section-kicker">Current Position</p>
-                        <div className="mt-4">
-                          <PositionCard
-                            hasPosition={Boolean(participant?.position?.is_open)}
-                            direction={participant?.position?.direction ?? null}
-                            size={participant?.position ? toBigIntValue(participant.position.size).toLocaleString() : null}
-                            entryPrice={
-                              participant?.position
-                                ? formatChainUsdPrice(participant.position.entry_price)
-                                : null
-                            }
-                            livePrice={livePriceLabel === "BTC --" ? "$0.00" : livePriceLabel}
-                            tournamentPrice={tournamentPriceLabel}
-                            livePreviewPnl={
-                              participant?.position?.is_open
-                                ? {
-                                    label: formatSignedUsd(livePreviewMetrics.pnl),
-                                    positive: livePreviewMetrics.pnl > 0,
-                                    negative: livePreviewMetrics.pnl < 0,
-                                    key: `live-${Math.round(livePreviewMetrics.pnl * 100)}`,
-                                  }
-                                : null
-                            }
-                            tournamentPnl={
-                              participant
-                                ? {
-                                    label: formatSignedUsd(Number(toBigIntValue(participant.unrealized_pnl))),
-                                    positive: toBigIntValue(participant.unrealized_pnl) > 0n,
-                                    negative: toBigIntValue(participant.unrealized_pnl) < 0n,
-                                    key: `tournament-${participant.unrealized_pnl}`,
-                                  }
-                                : null
-                            }
-                            returnPct={
-                              participant?.position?.is_open
-                                ? {
-                                    label: formatSignedPercent(livePreviewMetrics.returnPct),
-                                    positive: livePreviewMetrics.returnPct > 0,
-                                    negative: livePreviewMetrics.returnPct < 0,
-                                    key: `return-${Math.round(livePreviewMetrics.returnPct * 100)}`,
-                                  }
-                                : null
-                            }
-                            riskControls={
-                              participant?.position
-                                ? {
-                                    stopLossPrice:
-                                      participant.position.stop_loss_price != null
-                                        ? formatChainUsdPrice(participant.position.stop_loss_price)
-                                        : null,
-                                    takeProfitPrice:
-                                      participant.position.take_profit_price != null
-                                        ? formatChainUsdPrice(participant.position.take_profit_price)
-                                        : null,
-                                  }
-                                : null
-                            }
-                            onClose={() => {
-                              handleClosePosition();
-                            }}
-                            closePending={closePositionMutation.isPending}
-                          />
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1fr)_360px]">
+                      <div className="space-y-4">
+                        <MarketHeader
+                          title={tradeViewTournament.name}
+                          livePrice={livePriceLabel === "BTC --" ? "$0.00" : livePriceLabel}
+                          tournamentPrice={tournamentPriceLabel}
+                          syncStatus={syncStatusLabel}
+                          timeLeft={describeCountdown(tradeViewTournament.start_time, tradeViewTournament.end_time, now)}
+                          statusKind={selectedTournamentStatusKind}
+                          statusLabel={selectedTournamentStatusLabel}
+                          priceSourceLabel="Price source: Binance BTC/USDT"
+                          sourceNotice={marketSourceNotice}
+                        />
+                        <TradingChart
+                          livePrice={livePriceLabel === "BTC --" ? "$0.00" : livePriceLabel}
+                          liveChange={`${livePriceChange24h >= 0 ? "+" : ""}${livePriceChange24h.toFixed(2)}%`}
+                          tournamentPrice={tournamentPriceLabel}
+                          priceHistory={liveHistory}
+                          tournamentPriceValue={currentPriceValue}
+                          entryPriceValue={
+                            participant?.position?.is_open
+                              ? toBigIntValue(participant.position.entry_price)
+                              : null
+                          }
+                        />
+                        <div className="rounded-[12px] border border-[var(--border-soft)] bg-[var(--panel)] p-4">
+                          <details>
+                            <summary className="section-kicker cursor-pointer list-none select-none flex items-center justify-between">
+                              Trade History <span className="text-[var(--muted)] opacity-50">Expand ▼</span>
+                            </summary>
+                            <div className="mt-4">
+                              <TradeHistoryPanel history={tradeHistory} currentPrice={currentPriceValue} />
+                            </div>
+                          </details>
+                        </div>
+                      </div>
+
+                      <div className="space-y-4">
+                        <OrderPanel
+                          tournamentName={tradeViewTournament.name}
+                          timeLeft={describeCountdown(tradeViewTournament.start_time, tradeViewTournament.end_time, now)}
+                          prizePool={formatPlanck(tradeViewTournament.prize_pool)}
+                          direction={tradeDirection}
+                          onDirectionChange={setTradeDirection}
+                          size={tradeSize}
+                          onSizeChange={setTradeSize}
+                          availableBalance={participant ? toBigIntValue(participant.final_value).toLocaleString() : "Join to unlock"}
+                          entryPrice={tournamentPriceLabel}
+                          currentPrice={livePriceLabel === "BTC --" ? "$0.00" : livePriceLabel}
+                          estimatedPnl={{
+                            value: formatSignedUsd(estimatedTradeMetrics.pnl),
+                            tone:
+                              estimatedTradeMetrics.pnl > 0
+                                ? "positive"
+                                : estimatedTradeMetrics.pnl < 0
+                                  ? "negative"
+                                  : "default",
+                          }}
+                          actionLabel={tradeDirection === "Long" ? "Confirm BTC goes up" : "Confirm BTC goes down"}
+                          actionVariant={tradeDirection === "Long" ? "positive" : "danger"}
+                          onAction={handleOpenPosition}
+                          actionDisabled={Boolean(tradeDisabledReason) || openPositionMutation.isPending || Boolean(participant?.position?.is_open)}
+                          secondaryActionLabel={
+                            participant?.position?.is_open ? "Close Position" : undefined
+                          }
+                          onSecondaryAction={
+                            participant?.position?.is_open ? handleClosePosition : undefined
+                          }
+                          secondaryDisabled={closePositionMutation.isPending}
+                          activePositionSummary={
+                            participant?.position?.is_open
+                              ? {
+                                  direction: participant.position.direction,
+                                  size: `${toBigIntValue(participant.position.size).toLocaleString()} USDT`,
+                                  entryPrice: formatChainUsdPrice(participant.position.entry_price),
+                                }
+                              : null
+                          }
+                          stopLossPrice={stopLossPrice}
+                          onStopLossChange={setStopLossPrice}
+                          takeProfitPrice={takeProfitPrice}
+                          onTakeProfitChange={setTakeProfitPrice}
+                          riskControlsHelper="These automatic close rules are handled for you during the tournament."
+                          helper={tournamentPriceHelperText}
+                          warning={tradeFormError ?? tradeDisabledReason ?? undefined}
+                        />
+
+                        <div className="rounded-[12px] border border-[var(--border-soft)] bg-[var(--panel)] p-4">
+                          <p className="section-kicker">Current Position</p>
+                          <div className="mt-4">
+                            <PositionCard
+                              hasPosition={Boolean(participant?.position?.is_open)}
+                              direction={participant?.position?.direction ?? null}
+                              size={participant?.position ? toBigIntValue(participant.position.size).toLocaleString() : null}
+                              entryPrice={
+                                participant?.position
+                                  ? formatChainUsdPrice(participant.position.entry_price)
+                                  : null
+                              }
+                              livePrice={livePriceLabel === "BTC --" ? "$0.00" : livePriceLabel}
+                              tournamentPrice={tournamentPriceLabel}
+                              livePreviewPnl={
+                                participant?.position?.is_open
+                                  ? {
+                                      label: formatSignedUsd(livePreviewMetrics.pnl),
+                                      positive: livePreviewMetrics.pnl > 0,
+                                      negative: livePreviewMetrics.pnl < 0,
+                                      key: `live-${Math.round(livePreviewMetrics.pnl * 100)}`,
+                                    }
+                                  : null
+                              }
+                              tournamentPnl={
+                                participant
+                                  ? {
+                                      label: formatSignedUsd(Number(toBigIntValue(participant.unrealized_pnl))),
+                                      positive: toBigIntValue(participant.unrealized_pnl) > 0n,
+                                      negative: toBigIntValue(participant.unrealized_pnl) < 0n,
+                                      key: `tournament-${participant.unrealized_pnl}`,
+                                    }
+                                  : null
+                              }
+                              returnPct={
+                                participant?.position?.is_open
+                                  ? {
+                                      label: formatSignedPercent(livePreviewMetrics.returnPct),
+                                      positive: livePreviewMetrics.returnPct > 0,
+                                      negative: livePreviewMetrics.returnPct < 0,
+                                      key: `return-${Math.round(livePreviewMetrics.returnPct * 100)}`,
+                                    }
+                                  : null
+                              }
+                              riskControls={
+                                participant?.position
+                                  ? {
+                                      stopLossPrice:
+                                        participant.position.stop_loss_price != null
+                                          ? formatChainUsdPrice(participant.position.stop_loss_price)
+                                          : null,
+                                      takeProfitPrice:
+                                        participant.position.take_profit_price != null
+                                          ? formatChainUsdPrice(participant.position.take_profit_price)
+                                          : null,
+                                    }
+                                  : null
+                              }
+                              onClose={() => {
+                                handleClosePosition();
+                              }}
+                              closePending={closePositionMutation.isPending}
+                            />
+                          </div>
                         </div>
                       </div>
                     </div>
-                  </div>
+                  )}
                 </div>
               )}
             </motion.section>
@@ -2526,6 +2612,60 @@ export function App() {
                     <ArenaCard className="p-5 xl:col-span-2">
                       <p className="section-kicker mb-4">Global Stats</p>
                       <AdminOverviewPanel metrics={adminOverviewMetrics} />
+                    </ArenaCard>
+
+                    <ArenaCard className="p-5 xl:col-span-2">
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <p className="section-kicker">Keeper Status</p>
+                          <p className="mt-2 text-sm text-[var(--muted)]">
+                            Live view of which tournaments need keeper attention now.
+                          </p>
+                        </div>
+                        <UiStatusPill kind="admin" label="Keeper Monitor" />
+                      </div>
+
+                      <div className="mt-5">
+                        <AdminOverviewPanel metrics={keeperMonitorMetrics} />
+                      </div>
+
+                      <div className="mt-5 space-y-3">
+                        {keeperMonitorTournaments.length ? (
+                          keeperMonitorTournaments.map((item) => (
+                            <div
+                              key={`keeper-monitor-${item.tournament.tournament_id}`}
+                              className="rounded-[10px] border border-[var(--border-soft)] bg-[var(--sidebar)] p-4"
+                            >
+                              <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                                <div>
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <p className="text-sm font-semibold text-[var(--text)]">{item.tournament.name}</p>
+                                    <UiStatusPill kind={item.kind === "warning" ? "ended" : item.kind} label={item.label} />
+                                  </div>
+                                  <div className="mt-2 flex flex-wrap gap-4 text-xs text-[var(--muted)]">
+                                    <span>Tournament #{item.tournament.tournament_id}</span>
+                                    <span>{describeCountdown(item.tournament.start_time, item.tournament.end_time, now)}</span>
+                                    <span>{item.detail}</span>
+                                  </div>
+                                </div>
+                                <div className="flex flex-wrap gap-2">
+                                  <Button
+                                    variant="secondary"
+                                    onClick={() => {
+                                      setSelectedTournamentId(item.tournament.tournament_id);
+                                      setRoute({ page: "trade", tournamentId: item.tournament.tournament_id });
+                                    }}
+                                  >
+                                    Open Tournament
+                                  </Button>
+                                </div>
+                              </div>
+                            </div>
+                          ))
+                        ) : (
+                          <EmptySection copy="No tournaments are available for keeper monitoring yet." />
+                        )}
+                      </div>
                     </ArenaCard>
 
                     <ArenaCard className="p-5">
@@ -3317,6 +3457,7 @@ function mapArenaErrorMessage(message: string): string {
   if (message.includes("TournamentNotActive")) return "Tournament not active.";
   if (message.includes("TournamentNotUpcoming")) return "Tournament already started.";
   if (message.includes("TournamentRequiresEnd")) return "End the tournament on-chain before settling.";
+  if (message.includes("SettlementDelayNotElapsed")) return "Results can be finalized two minutes after the tournament ends.";
   if (message.includes("AlreadyJoined")) return "Already joined.";
   if (message.includes("PositionAlreadyOpen")) return "Position already open.";
   if (message.includes("PositionNotOpen")) return "No open position.";
@@ -3768,7 +3909,7 @@ function resolveBanner({
   if (!hasProgramId) {
     return {
       tone: "error",
-      message: "TradeVault Arena is missing its deployed program configuration.",
+      message: "Trade Arena is missing its deployed program configuration.",
     };
   }
 

@@ -16,6 +16,8 @@ const DAVE: u64 = 45;
 const EVE: u64 = 46;
 
 const BLOCK_MS: u64 = 3_000;
+const AUTO_CLOSE_BEFORE_END_MS: u64 = 5_000;
+const SETTLEMENT_DELAY_MS: u64 = 120_000;
 const INITIAL_PRICE: u128 = 100;
 const ENTRY_FEE: u128 = 3 * UNITS;
 const INITIAL_BALANCE: u128 = 1_000;
@@ -548,19 +550,23 @@ async fn keeper_tick_updates_price_and_processes_lifecycle_once() {
         .unwrap();
     assert!(summary.price_updated);
     assert!(summary.tournament_ended);
-    assert!(summary.tournament_settled);
+    assert!(!summary.tournament_settled);
 
-    let settled = admin_service.tournament(tournament.tournament_id).await.unwrap();
-    assert!(matches!(settled.status, TournamentStatus::Settled));
+    let ended = admin_service.tournament(tournament.tournament_id).await.unwrap();
+    assert!(matches!(ended.status, TournamentStatus::Ended));
     assert_eq!(admin_service.current_mock_price().await.unwrap(), 111);
 
+    advance_to_timestamp(&env, tournament.end_time + SETTLEMENT_DELAY_MS);
     let second_summary = admin_service
         .keeper_tick(tournament.tournament_id, 112)
         .await
         .unwrap();
     assert!(second_summary.price_updated);
     assert!(!second_summary.tournament_ended);
-    assert!(!second_summary.tournament_settled);
+    assert!(second_summary.tournament_settled);
+
+    let settled = admin_service.tournament(tournament.tournament_id).await.unwrap();
+    assert!(matches!(settled.status, TournamentStatus::Settled));
 }
 
 #[tokio::test]
@@ -645,6 +651,13 @@ async fn settlement_flow_ranks_top_three_and_distributes_603010() {
         .unwrap();
     assert!(matches!(ended.status, TournamentStatus::Ended));
 
+    let early_settlement: Result<SettlementResult, _> = admin_service
+        .settle_tournament(tournament.tournament_id)
+        .await;
+    assert!(early_settlement.is_err());
+
+    advance_to_timestamp(&env, tournament.end_time + SETTLEMENT_DELAY_MS);
+
     let settlement: SettlementResult = admin_service
         .settle_tournament(tournament.tournament_id)
         .await
@@ -676,6 +689,56 @@ async fn settlement_flow_ranks_top_three_and_distributes_603010() {
         .settle_tournament(tournament.tournament_id)
         .await;
     assert!(settle_twice_result.is_err());
+}
+
+#[tokio::test]
+async fn keeper_tick_auto_closes_positions_during_final_window() {
+    let (program, env) = deploy_program().await;
+    let program_id = program.id();
+    let now = env.system().block_timestamp();
+    let tournament = create_tournament(
+        program_id,
+        &env,
+        "Final Window Auto Close",
+        now + 8 * BLOCK_MS,
+        now + 18 * BLOCK_MS,
+        3,
+    )
+    .await;
+
+    let _joined = join_tournament(program_id, &env, BOB, tournament.tournament_id).await;
+    advance_to_timestamp(&env, tournament.start_time);
+
+    let bob_env = actor_env(&env, BOB);
+    let mut bob_service = service_for(program_id, &bob_env);
+    let _ = bob_service
+        .open_position(
+            tournament.tournament_id,
+            PositionDirection::Long,
+            100,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    advance_to_timestamp(&env, tournament.end_time - BLOCK_MS);
+
+    let mut admin_service = service_for(program_id, &env);
+    let summary = admin_service
+        .keeper_tick(tournament.tournament_id, 105)
+        .await
+        .unwrap();
+    assert_eq!(summary.positions_closed, 1);
+    assert!(!summary.tournament_ended);
+
+    let participant = bob_service
+        .participant(tournament.tournament_id, BOB.into())
+        .await
+        .unwrap();
+    assert!(participant.position.is_none());
+    assert_eq!(participant.last_close_reason, Some(CloseReason::Manual));
+    assert_eq!(participant.last_close_price, Some(105));
 }
 
 #[tokio::test]
@@ -752,6 +815,25 @@ async fn guardrails_reject_unauthorized_or_invalid_actions() {
         .await
         .unwrap();
     assert!(opened.position.is_some());
+
+    advance_to_timestamp(
+        &env,
+        tournament
+            .end_time
+            .saturating_sub(AUTO_CLOSE_BEFORE_END_MS)
+            .saturating_add(1),
+    );
+
+    let late_open_result: Result<ParticipantView, _> = bob_service
+        .open_position(
+            tournament.tournament_id,
+            PositionDirection::Short,
+            100,
+            None,
+            None,
+        )
+        .await;
+    assert!(late_open_result.is_err());
 
     let second_open_result: Result<ParticipantView, _> = bob_service
         .open_position(
