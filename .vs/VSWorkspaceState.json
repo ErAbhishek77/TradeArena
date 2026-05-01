@@ -1,0 +1,13 @@
+{
+  "ExpandedNodes": [
+    "",
+    "\\app",
+    "\\client",
+    "\\target",
+    "\\target\\release",
+    "\\target\\wasm32-unknown-unknown",
+    "\\target\\wasm32-unknown-unknown\\release"
+  ],
+  "SelectedNode": "\\tests",
+  "PreviewInSolutionExplorer": false
+}

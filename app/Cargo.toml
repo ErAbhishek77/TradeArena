@@ -12,3 +12,8 @@ categories.workspace = true
 
 [dependencies]
 sails-rs.workspace = true
+parity-scale-codec = { version = "3", default-features = false, features = ["derive"] }
+scale-info = { version = "2", default-features = false, features = ["derive"] }
+
+[lib]
+crate-type = ["cdylib", "rlib"]

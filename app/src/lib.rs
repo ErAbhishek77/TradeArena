@@ -45,6 +45,7 @@ pub enum CloseReason {
 #[scale_info(crate = sails_rs::scale_info)]
 pub enum ArenaError {
     Unauthorized,
+    CannotRemoveAllAdmins,
     EmptyName,
     InvalidEntryFee,
     InvalidTimeRange,
@@ -259,7 +260,7 @@ pub enum TradeVaultArenaEvent {
 
 #[derive(Clone, Debug, Default)]
 pub struct ArenaState {
-    pub admin: ActorId,
+    pub admins: Vec<ActorId>,
     pub current_btc_price: u128,
     pub next_tournament_id: TournamentId,
     pub tournaments: BTreeMap<TournamentId, Tournament>,
@@ -276,7 +277,7 @@ impl Program {
 
         Self {
             state: RefCell::new(ArenaState {
-                admin: msg::source(),
+                admins: vec![msg::source()],
                 current_btc_price: initial_btc_price,
                 next_tournament_id: 1,
                 tournaments: BTreeMap::new(),
@@ -315,7 +316,8 @@ impl<'a> TradeVaultArenaService<'a> {
     }
 
     fn ensure_admin(&self) -> Result<(), ArenaError> {
-        if TradeVaultArenaService::caller() != self.state.borrow().admin {
+        let caller = TradeVaultArenaService::caller();
+        if !self.state.borrow().admins.contains(&caller) {
             return Err(ArenaError::Unauthorized);
         }
 
@@ -725,7 +727,47 @@ impl<'a> TradeVaultArenaService<'a> {
 impl TradeVaultArenaService<'_> {
     #[export]
     pub fn admin(&self) -> ActorId {
-        self.state.borrow().admin
+        self.state
+            .borrow()
+            .admins
+            .first()
+            .copied()
+            .unwrap_or_default()
+    }
+
+    #[export]
+    pub fn admins(&self) -> Vec<ActorId> {
+        self.state.borrow().admins.clone()
+    }
+
+    #[export(unwrap_result)]
+    pub fn add_admin(&mut self, new_admin: ActorId) -> Result<Vec<ActorId>, ArenaError> {
+        self.ensure_admin()?;
+
+        let mut state = self.state.borrow_mut();
+        if !state.admins.contains(&new_admin) {
+            state.admins.push(new_admin);
+        }
+
+        Ok(state.admins.clone())
+    }
+
+    #[export(unwrap_result)]
+    pub fn remove_admin(&mut self, admin_to_remove: ActorId) -> Result<Vec<ActorId>, ArenaError> {
+        self.ensure_admin()?;
+
+        let mut state = self.state.borrow_mut();
+        if state.admins.len() <= 1 && state.admins.contains(&admin_to_remove) {
+            return Err(ArenaError::CannotRemoveAllAdmins);
+        }
+
+        state.admins.retain(|admin| admin != &admin_to_remove);
+
+        if state.admins.is_empty() {
+            return Err(ArenaError::CannotRemoveAllAdmins);
+        }
+
+        Ok(state.admins.clone())
     }
 
     #[export]

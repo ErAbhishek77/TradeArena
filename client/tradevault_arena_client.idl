@@ -91,6 +91,7 @@ constructor {
 };
 
 service TradevaultArena {
+  AddAdmin : (new_admin: actor_id) -> vec actor_id;
   ClaimReward : (tournament_id: u64) -> u128;
   ClosePosition : (tournament_id: u64) -> ParticipantView;
   CreateTournament : (name: str, entry_fee: u128, start_time: u64, end_time: u64, initial_virtual_balance: u128, max_participants: u32) -> TournamentView;
@@ -99,10 +100,12 @@ service TradevaultArena {
   KeeperTick : (tournament_id: u64, new_btc_price: u128) -> KeeperTickSummary;
   OpenPosition : (tournament_id: u64, direction: PositionDirection, size: u128, stop_loss_price: opt u128, take_profit_price: opt u128) -> ParticipantView;
   ProcessTournament : (tournament_id: u64) -> KeeperTickSummary;
+  RemoveAdmin : (admin_to_remove: actor_id) -> vec actor_id;
   SettleTournament : (tournament_id: u64) -> SettlementResult;
   UpdateMockPrice : (new_price: u128) -> u128;
   UpdatePriceAndProcess : (tournament_id: u64, new_btc_price: u128) -> KeeperTickSummary;
   query Admin : () -> actor_id;
+  query Admins : () -> vec actor_id;
   query CurrentMockPrice : () -> u128;
   query Leaderboard : (tournament_id: u64) -> vec LeaderboardEntry;
   query Participant : (tournament_id: u64, participant: actor_id) -> ParticipantView;

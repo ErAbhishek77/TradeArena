@@ -133,6 +133,55 @@ async fn admin_creates_tournament_with_expected_fields() {
 }
 
 #[tokio::test]
+async fn contract_initializes_with_primary_admin_and_admin_list() {
+    let (program, env) = deploy_program().await;
+    let program_id = program.id();
+    let service = service_for(program_id, &env);
+
+    assert_eq!(service.admin().await.unwrap(), ActorId::from(ADMIN));
+    assert_eq!(service.admins().await.unwrap(), vec![ActorId::from(ADMIN)]);
+}
+
+#[tokio::test]
+async fn added_admin_can_execute_admin_only_calls() {
+    let (program, env) = deploy_program().await;
+    let program_id = program.id();
+    let now = env.system().block_timestamp();
+    let start_time = now + 5 * BLOCK_MS;
+    let end_time = now + 12 * BLOCK_MS;
+
+    let mut admin_service = service_for(program_id, &env);
+    let admins = admin_service.add_admin(BOB.into()).await.unwrap();
+    assert_eq!(admins, vec![ActorId::from(ADMIN), ActorId::from(BOB)]);
+
+    let bob_env = actor_env(&env, BOB);
+    let mut bob_service = service_for(program_id, &bob_env);
+    let created = bob_service
+        .create_tournament(
+            "Co-Admin Arena".into(),
+            ENTRY_FEE,
+            start_time,
+            end_time,
+            INITIAL_BALANCE,
+            16,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(created.tournament_id, 1);
+}
+
+#[tokio::test]
+async fn cannot_remove_last_admin() {
+    let (program, env) = deploy_program().await;
+    let program_id = program.id();
+    let mut service = service_for(program_id, &env);
+
+    let result = service.remove_admin(ADMIN.into()).await;
+    assert!(result.is_err());
+}
+
+#[tokio::test]
 async fn users_join_tournament_and_pool_tracking_updates() {
     let (program, env) = deploy_program().await;
     let program_id = program.id();

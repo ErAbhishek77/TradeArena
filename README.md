@@ -36,7 +36,7 @@ The project is intentionally narrow:
 
 ## Deployed Testnet Program
 
-- Program ID: `0x2db313ddb41fa625b556bf3557e500fb7d80e1a360cabaf2d065826741bbadd2`
+- Program ID: `0x2feb6fb23beac9303c8f9b234965904c5e50e40a3fa1aa9b20c7df9ec220ba45`
 - Network endpoint: `wss://testnet.vara.network`
 - Frontend IDL snapshot: [`frontend/src/assets/tradevault_arena_client.idl`](frontend/src/assets/tradevault_arena_client.idl)
 
@@ -127,7 +127,7 @@ Env values:
 
 ```bash
 VITE_VARA_ENDPOINT=wss://testnet.vara.network
-VITE_PROGRAM_ID=0x2db313ddb41fa625b556bf3557e500fb7d80e1a360cabaf2d065826741bbadd2
+VITE_PROGRAM_ID=0x2feb6fb23beac9303c8f9b234965904c5e50e40a3fa1aa9b20c7df9ec220ba45
 ```
 
 Then start the app locally:
@@ -185,5 +185,5 @@ Important deployment note:
 
 - Prize payouts are computed during settlement and claimed by winners afterward.
 - The admin wallet is the deployer account.
-- The frontend defaults to program `0x2db313ddb41fa625b556bf3557e500fb7d80e1a360cabaf2d065826741bbadd2` on `wss://testnet.vara.network`.
+- The frontend defaults to program `0x2feb6fb23beac9303c8f9b234965904c5e50e40a3fa1aa9b20c7df9ec220ba45` on `wss://testnet.vara.network`.
 - This repository is MVP-scoped and not production-hardened.

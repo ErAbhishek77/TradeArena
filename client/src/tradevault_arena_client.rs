@@ -47,6 +47,10 @@ pub mod tradevault_arena {
     use super::*;
     pub trait TradevaultArena {
         type Env: sails_rs::client::GearEnv;
+        fn add_admin(
+            &mut self,
+            new_admin: ActorId,
+        ) -> sails_rs::client::PendingCall<io::AddAdmin, Self::Env>;
         fn claim_reward(
             &mut self,
             tournament_id: u64,
@@ -89,6 +93,10 @@ pub mod tradevault_arena {
             &mut self,
             tournament_id: u64,
         ) -> sails_rs::client::PendingCall<io::ProcessTournament, Self::Env>;
+        fn remove_admin(
+            &mut self,
+            admin_to_remove: ActorId,
+        ) -> sails_rs::client::PendingCall<io::RemoveAdmin, Self::Env>;
         fn settle_tournament(
             &mut self,
             tournament_id: u64,
@@ -103,6 +111,7 @@ pub mod tradevault_arena {
             new_btc_price: u128,
         ) -> sails_rs::client::PendingCall<io::UpdatePriceAndProcess, Self::Env>;
         fn admin(&self) -> sails_rs::client::PendingCall<io::Admin, Self::Env>;
+        fn admins(&self) -> sails_rs::client::PendingCall<io::Admins, Self::Env>;
         fn current_mock_price(
             &self,
         ) -> sails_rs::client::PendingCall<io::CurrentMockPrice, Self::Env>;
@@ -126,6 +135,12 @@ pub mod tradevault_arena {
         for sails_rs::client::Service<TradevaultArenaImpl, E>
     {
         type Env = E;
+        fn add_admin(
+            &mut self,
+            new_admin: ActorId,
+        ) -> sails_rs::client::PendingCall<io::AddAdmin, Self::Env> {
+            self.pending_call((new_admin,))
+        }
         fn claim_reward(
             &mut self,
             tournament_id: u64,
@@ -197,6 +212,12 @@ pub mod tradevault_arena {
         ) -> sails_rs::client::PendingCall<io::ProcessTournament, Self::Env> {
             self.pending_call((tournament_id,))
         }
+        fn remove_admin(
+            &mut self,
+            admin_to_remove: ActorId,
+        ) -> sails_rs::client::PendingCall<io::RemoveAdmin, Self::Env> {
+            self.pending_call((admin_to_remove,))
+        }
         fn settle_tournament(
             &mut self,
             tournament_id: u64,
@@ -217,6 +238,9 @@ pub mod tradevault_arena {
             self.pending_call((tournament_id, new_btc_price))
         }
         fn admin(&self) -> sails_rs::client::PendingCall<io::Admin, Self::Env> {
+            self.pending_call(())
+        }
+        fn admins(&self) -> sails_rs::client::PendingCall<io::Admins, Self::Env> {
             self.pending_call(())
         }
         fn current_mock_price(
@@ -250,6 +274,7 @@ pub mod tradevault_arena {
 
     pub mod io {
         use super::*;
+        sails_rs::io_struct_impl!(AddAdmin (new_admin: ActorId) -> Vec<ActorId>);
         sails_rs::io_struct_impl!(ClaimReward (tournament_id: u64) -> u128);
         sails_rs::io_struct_impl!(ClosePosition (tournament_id: u64) -> super::ParticipantView);
         sails_rs::io_struct_impl!(CreateTournament (name: String, entry_fee: u128, start_time: u64, end_time: u64, initial_virtual_balance: u128, max_participants: u32) -> super::TournamentView);
@@ -258,10 +283,12 @@ pub mod tradevault_arena {
         sails_rs::io_struct_impl!(KeeperTick (tournament_id: u64, new_btc_price: u128) -> super::KeeperTickSummary);
         sails_rs::io_struct_impl!(OpenPosition (tournament_id: u64, direction: super::PositionDirection, size: u128, stop_loss_price: Option<u128>, take_profit_price: Option<u128>) -> super::ParticipantView);
         sails_rs::io_struct_impl!(ProcessTournament (tournament_id: u64) -> super::KeeperTickSummary);
+        sails_rs::io_struct_impl!(RemoveAdmin (admin_to_remove: ActorId) -> Vec<ActorId>);
         sails_rs::io_struct_impl!(SettleTournament (tournament_id: u64) -> super::SettlementResult);
         sails_rs::io_struct_impl!(UpdateMockPrice (new_price: u128) -> u128);
         sails_rs::io_struct_impl!(UpdatePriceAndProcess (tournament_id: u64, new_btc_price: u128) -> super::KeeperTickSummary);
         sails_rs::io_struct_impl!(Admin () -> ActorId);
+        sails_rs::io_struct_impl!(Admins () -> Vec<ActorId>);
         sails_rs::io_struct_impl!(CurrentMockPrice () -> u128);
         sails_rs::io_struct_impl!(Leaderboard (tournament_id: u64) -> Vec<super::LeaderboardEntry>);
         sails_rs::io_struct_impl!(Participant (tournament_id: u64, participant: ActorId) -> super::ParticipantView);

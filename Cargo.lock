@@ -7467,7 +7467,9 @@ dependencies = [
 name = "tradevault-arena-app"
 version = "0.1.0"
 dependencies = [
+ "parity-scale-codec",
  "sails-rs",
+ "scale-info",
 ]
 
 [[package]]
